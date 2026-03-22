@@ -1,0 +1,301 @@
+#!/bin/bash
+# radio - CLI tool for controlling a Roberts Revival iStream 3L via FSAPI
+# Usage: radio <command> [args...]
+# Requires: curl, xq (brew install python-yq), jq
+
+set -euo pipefail
+
+RADIO="${RADIO_IP:-192.168.1.72}"
+PIN="${RADIO_PIN:-1234}"
+BASE="http://$RADIO/fsapi"
+SESSION_FILE="/tmp/radio-session-${RADIO}"
+
+# --- session management ---
+
+get_sid() {
+  if [ -f "$SESSION_FILE" ]; then
+    cat "$SESSION_FILE"
+  else
+    new_session
+  fi
+}
+
+new_session() {
+  local sid
+  sid=$(curl -s -m 5 "$BASE/CREATE_SESSION?pin=$PIN" 2>/dev/null | xq -r '.fsapiResponse.sessionId // empty' || true)
+  if [ -n "$sid" ]; then
+    echo "$sid" > "$SESSION_FILE"
+    echo "$sid"
+  fi
+}
+
+# Make an FSAPI request, retrying once if session is stale
+fsapi_curl() {
+  local url="$1" sid result
+  sid=$(get_sid)
+  result=$(curl -s -m 8 "${url}&sid=${sid}" 2>/dev/null || true)
+  if [ -z "$result" ]; then
+    rm -f "$SESSION_FILE"
+    sid=$(new_session)
+    result=$(curl -s -m 8 "${url}&sid=${sid}" 2>/dev/null || true)
+  fi
+  [ -z "$result" ] && result='<fsapiResponse><status>FS_REQUEST_FAILED</status></fsapiResponse>'
+  echo "$result"
+}
+
+# --- jq filters for FSAPI XML→JSON ---
+
+# GET: extract the value from the type wrapper, return {value, type} or {error}
+JQ_GET='.fsapiResponse | if .status != "FS_OK" then {error: .status}
+  else .value | to_entries[0] | {value: .value, type: .key} end'
+
+# SET: return {status}
+JQ_SET='.fsapiResponse | {status}'
+
+# LIST: flatten items into clean objects with key + named fields
+JQ_LIST='.fsapiResponse |
+  if .status == "FS_OK" then
+    [(.item // []) | if type == "object" then [.] else . end | .[] |
+      {key: (."@key" | tonumber)} +
+      ([.field | if type == "object" then [.] else . end | .[] |
+        {(."@name"): (to_entries | map(select(.key != "@name")) | first.value)}
+      ] | add // {})
+    ]
+  elif .status == "FS_LIST_END" then []
+  else {error: .status} end'
+
+# GET_MULTIPLE: build {node: value} object, skipping non-OK responses
+JQ_MULTI='.fsapiGetMultipleResponse.fsapiResponse |
+  if type == "object" then [.] else . end |
+  [.[] | select(.status == "FS_OK" and .node != null) |
+    {(.node): (.value | to_entries[0].value)}
+  ] | add // {}'
+
+# --- core operations ---
+
+fsapi_get()  { fsapi_curl "$BASE/GET/$1?pin=$PIN"  | xq "$JQ_GET"; }
+fsapi_set()  { fsapi_curl "$BASE/SET/$1?pin=$PIN&value=$2" | xq "$JQ_SET"; }
+fsapi_list() { fsapi_curl "$BASE/LIST_GET_NEXT/$1/-1?pin=$PIN&maxItems=${2:-100}" | xq "$JQ_LIST"; }
+
+fsapi_multi() {
+  # The radio's HTTP server rejects long URLs, so batch into chunks of 5
+  local chunk_size=5 i=0 args=("$@") chunk_nodes result="{}"
+  while [ $i -lt ${#args[@]} ]; do
+    chunk_nodes=()
+    for (( j=0; j<chunk_size && i+j < ${#args[@]}; j++ )); do
+      chunk_nodes+=("${args[i+j]}")
+    done
+    local url="$BASE/GET_MULTIPLE?pin=$PIN"
+    for node in "${chunk_nodes[@]}"; do url="$url&node=$node"; done
+    local chunk_result
+    chunk_result=$(fsapi_curl "$url" | xq "$JQ_MULTI")
+    result=$(jq -n --argjson a "$result" --argjson b "$chunk_result" '$a + $b')
+    i=$((i + chunk_size))
+  done
+  echo "$result"
+}
+
+# --- commands ---
+
+cmd_status() {
+  local raw modes
+  raw=$(fsapi_multi \
+    netRemote.sys.power \
+    netRemote.sys.mode \
+    netRemote.sys.audio.volume \
+    netRemote.sys.audio.mute \
+    netRemote.play.status \
+    netRemote.play.info.name \
+    netRemote.play.info.text \
+    netRemote.play.info.artist \
+    netRemote.play.info.graphicUri \
+    netRemote.play.info.duration \
+    netRemote.play.position)
+  modes=$(fsapi_list netRemote.sys.caps.validModes)
+
+  # Combine raw values + mode list → friendly status object
+  jq -n --argjson raw "$raw" --argjson modes "$modes" '
+    ($raw["netRemote.sys.mode"] // "?") as $mode_num |
+    ($modes | map(select(.key == ($mode_num | tonumber))) | first.label // "mode_\($mode_num)") as $mode_label |
+    ($raw["netRemote.play.info.duration"] // "0" | tonumber / 1000 | floor) as $dur |
+    ($raw["netRemote.play.position"] // "0" | tonumber / 1000 | floor) as $pos |
+    {
+      power: (if $raw["netRemote.sys.power"] == "1" then "on" else "standby" end),
+      mode: $mode_label,
+      volume: ($raw["netRemote.sys.audio.volume"] // "0" | tonumber),
+      mute: ($raw["netRemote.sys.audio.mute"] == "1"),
+      playback: ({"1":"buffering","2":"playing","3":"paused"}[$raw["netRemote.play.status"] // "0"] // "stopped"),
+      name: ($raw["netRemote.play.info.name"] // ""),
+      artist: ($raw["netRemote.play.info.artist"] // ""),
+      text: ($raw["netRemote.play.info.text"] // ""),
+      artwork: ($raw["netRemote.play.info.graphicUri"] // ""),
+      position: "\($pos / 60 | floor):\($pos % 60 | tostring | if length < 2 then "0" + . else . end)",
+      duration: "\($dur / 60 | floor):\($dur % 60 | tostring | if length < 2 then "0" + . else . end)"
+    }'
+}
+
+cmd_info() {
+  local raw
+  raw=$(fsapi_multi \
+    netRemote.sys.info.friendlyName \
+    netRemote.sys.info.version \
+    netRemote.sys.info.radioId \
+    netRemote.sys.info.dmruuid \
+    netRemote.sys.net.ipConfig.address \
+    netRemote.sys.net.wlan.macAddress \
+    netRemote.sys.net.wlan.rssi \
+    netRemote.sys.net.wlan.connectedSSID)
+
+  jq -n --argjson raw "$raw" '
+    ($raw["netRemote.sys.net.ipConfig.address"] // "0" | tonumber) as $ip |
+    {
+      name: $raw["netRemote.sys.info.friendlyName"],
+      firmware: $raw["netRemote.sys.info.version"],
+      radio_id: $raw["netRemote.sys.info.radioId"],
+      uuid: $raw["netRemote.sys.info.dmruuid"],
+      ip: "\($ip / 16777216 | floor).\($ip / 65536 % 256 | floor).\($ip / 256 % 256 | floor).\($ip % 256)",
+      mac: $raw["netRemote.sys.net.wlan.macAddress"],
+      wifi_signal: ($raw["netRemote.sys.net.wlan.rssi"] // "0" | tonumber)
+    }'
+}
+
+cmd_nav() {
+  local subcmd="${1:-list}"
+  shift 2>/dev/null || true
+  case "$subcmd" in
+    on)     fsapi_set netRemote.nav.state 1 ;;
+    off)    fsapi_set netRemote.nav.state 0 ;;
+    list)   fsapi_list netRemote.nav.list "${1:-100}" ;;
+    into)   fsapi_set netRemote.nav.action.navigate "$1" ;;
+    back)   fsapi_set netRemote.nav.action.navigate 4294967295 ;;
+    select) fsapi_set netRemote.nav.action.selectItem "$1" ;;
+    info)   fsapi_multi netRemote.nav.state netRemote.nav.status \
+              netRemote.nav.numItems netRemote.nav.depth netRemote.nav.currentTitle ;;
+    *) echo "Usage: radio nav {list|into <key>|back|select <key>|on|off|info}" >&2; return 1 ;;
+  esac
+}
+
+cmd_eq() {
+  case "${1:-show}" in
+    presets) fsapi_list netRemote.sys.caps.eqPresets ;;
+    show)    fsapi_get netRemote.sys.audio.eqPreset ;;
+    set)     fsapi_set netRemote.sys.audio.eqPreset "$2" ;;
+    *) echo "Usage: radio eq {show|presets|set <n>}" >&2; return 1 ;;
+  esac
+}
+
+# --- main ---
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  status|s)      cmd_status ;;
+  info|i)        cmd_info ;;
+
+  on)            fsapi_set netRemote.sys.power 1 ;;
+  off|standby)   fsapi_set netRemote.sys.power 0 ;;
+
+  vol|v)
+    if [ -z "${1:-}" ]; then fsapi_get netRemote.sys.audio.volume
+    else fsapi_set netRemote.sys.audio.volume "$1"; fi ;;
+  mute)          fsapi_set netRemote.sys.audio.mute 1 ;;
+  unmute)        fsapi_set netRemote.sys.audio.mute 0 ;;
+
+  play)          fsapi_set netRemote.play.control 1 ;;
+  pause)         fsapi_set netRemote.play.control 2 ;;
+  stop)          fsapi_set netRemote.play.control 0 ;;
+  next)          fsapi_set netRemote.play.control 3 ;;
+  prev)          fsapi_set netRemote.play.control 4 ;;
+
+  mode)
+    if [ -z "${1:-}" ]; then fsapi_get netRemote.sys.mode
+    else fsapi_set netRemote.sys.mode "$1"; fi ;;
+  modes)         fsapi_list netRemote.sys.caps.validModes ;;
+
+  presets)       fsapi_list netRemote.nav.presets ;;
+  preset)        fsapi_set netRemote.nav.action.selectPreset "$1" ;;
+
+  nav|n)         cmd_nav "$@" ;;
+  eq)            cmd_eq "$@" ;;
+
+  sleep)
+    if [ -z "${1:-}" ]; then fsapi_get netRemote.sys.sleep
+    else fsapi_set netRemote.sys.sleep "$1"; fi ;;
+
+  clock)         fsapi_multi netRemote.sys.clock.localDate netRemote.sys.clock.localTime \
+                   netRemote.sys.clock.utcOffset netRemote.sys.clock.dst ;;
+  alarms)        fsapi_list netRemote.sys.alarm.config ;;
+  spotify)       fsapi_multi netRemote.spotify.username netRemote.spotify.status \
+                   netRemote.spotify.bitRate netRemote.spotify.lastError ;;
+
+  session)       rm -f "$SESSION_FILE"; new_session > /dev/null && echo '{"status": "ok"}' ;;
+
+  get)           fsapi_get "$1" ;;
+  set)           fsapi_set "$1" "$2" ;;
+  list)          fsapi_list "$1" "${2:-100}" ;;
+  multi)         fsapi_multi "$@" ;;
+
+  help|h|--help|-h)
+    cat <<'HELP'
+radio - Control your Roberts Revival iStream 3L
+
+USAGE: radio <command> [args...]
+
+STATUS & INFO
+  status, s         Current state (power, mode, volume, now playing)
+  info, i           Device info (name, firmware, network)
+
+POWER
+  on                Power on
+  off, standby      Standby
+
+VOLUME
+  vol [0-31]        Get or set volume
+  mute / unmute     Mute control
+
+PLAYBACK
+  play / pause / stop
+  next / prev       Next/previous track
+
+MODE
+  mode [n]          Get or set mode (use 'modes' to list)
+  modes             List available modes
+
+PRESETS
+  presets           List presets for current mode
+  preset <n>        Select preset n
+
+NAVIGATION
+  nav list          List items at current level
+  nav into <key>    Navigate into a folder
+  nav back          Go up one level
+  nav select <key>  Play an item
+  nav on / off      Enable/disable navigation
+  nav info          Current nav state
+
+EQ
+  eq show           Current EQ preset
+  eq presets        List available presets
+  eq set <n>        Set EQ preset
+
+OTHER
+  sleep [secs]      Get or set sleep timer (0=off)
+  clock             Date/time
+  alarms            Alarm config
+  spotify           Spotify Connect status
+  session           Force new session
+
+RAW ACCESS
+  get <node>        GET any node
+  set <node> <val>  SET any node
+  list <node>       LIST any node
+  multi <nodes...>  GET_MULTIPLE
+
+ENV: RADIO_IP (default 192.168.1.72), RADIO_PIN (default 1234)
+All output is JSON. Requires: curl, xq, jq
+HELP
+    ;;
+
+  *) echo "{\"error\": \"unknown command: $cmd\"}" >&2; exit 1 ;;
+esac

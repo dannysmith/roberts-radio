@@ -472,27 +472,34 @@ final class RadioViewModel: ObservableObject {
         isBrowseLoading = true
         defer { isBrowseLoading = false }
 
-        let info = await client.getMultiple(ip, nodes: [
-            "netRemote.nav.depth",
-            "netRemote.nav.currentTitle",
-            "netRemote.nav.numItems",
-        ])
-        browseDepth = Int(info["netRemote.nav.depth"] ?? "0") ?? 0
-        browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
+        // The radio's nav layer can take a moment to populate after enable/navigate.
+        // Retry a few times if numItems is 0 or the list fetch fails.
+        for attempt in 0..<4 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
 
-        let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
-        guard numItems > 0 else { browseItems = []; return }
+            let info = await client.getMultiple(ip, nodes: [
+                "netRemote.nav.depth",
+                "netRemote.nav.currentTitle",
+                "netRemote.nav.numItems",
+            ])
+            browseDepth = Int(info["netRemote.nav.depth"] ?? "0") ?? 0
+            browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
-        let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
-        if r.status == "FS_OK" {
-            browseItems = r.items.map { item in
-                (key: item.key,
-                 name: item.fields["name"] ?? "Item \(item.key)",
-                 isFolder: item.fields["type"] == "0")
+            let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
+            if numItems == 0 && attempt < 3 { continue }
+            guard numItems > 0 else { browseItems = []; return }
+
+            let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
+            if r.status == "FS_OK" && !r.items.isEmpty {
+                browseItems = r.items.map { item in
+                    (key: item.key,
+                     name: item.fields["name"] ?? "Item \(item.key)",
+                     isFolder: item.fields["type"] == "0")
+                }
+                return
             }
-        } else {
-            browseItems = []
         }
+        browseItems = []
     }
 
     func discover() async {

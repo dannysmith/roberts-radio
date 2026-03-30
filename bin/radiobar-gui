@@ -15,4 +15,4 @@ if [ ! -f "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
     echo "Done."
 fi
 
-exec "$BIN"
+exec "$BIN" "$@"

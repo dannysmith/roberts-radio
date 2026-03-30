@@ -1,0 +1,18 @@
+#!/bin/bash
+# Build and run RadioBar — menubar app for controlling the Roberts Radio
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$DIR/RadioBar.swift"
+BIN="$DIR/.build/RadioBar"
+
+mkdir -p "$DIR/.build"
+
+# Recompile only if source is newer than binary
+if [ ! -f "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
+    echo "Compiling RadioBar..."
+    swiftc -parse-as-library -O "$SRC" -o "$BIN" 2>&1
+    echo "Done."
+fi
+
+exec "$BIN"

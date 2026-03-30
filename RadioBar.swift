@@ -958,7 +958,9 @@ struct RadioMenuView: View {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        if !CommandLine.arguments.contains("--dock") {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 }
 

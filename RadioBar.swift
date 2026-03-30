@@ -1,25 +1,38 @@
 // RadioBar.swift — Menubar app for controlling a Roberts Revival iStream 3L via FSAPI
-// Build & run: ./bin/radiobar-gui
-// Or manually: swiftc -parse-as-library RadioBar.swift -o RadioBar && ./RadioBar
+// Build & run: ./bin/radiobar-gui [--dock] [--debug]
 
 import SwiftUI
 import Foundation
 
+// MARK: - Debug Logging
+
+let debugMode = CommandLine.arguments.contains("--debug")
+
+/// Logs to stderr when --debug is passed. No-op otherwise.
+func Log(_ msg: String) {
+    guard debugMode else { return }
+    let c = Calendar.current, d = Date()
+    let ts = String(format: "%02d:%02d:%02d", c.component(.hour, from: d), c.component(.minute, from: d), c.component(.second, from: d))
+    fputs("[\(ts)] \(msg)\n", stderr)
+}
+
 // MARK: - XML Parsing
 
-/// Parses a GET response: <fsapiResponse><status>X</status><value><TYPE>V</TYPE></value></fsapiResponse>
+/// Parses a GET or CREATE_SESSION response.
+/// Extracts status, value (from type-wrapper inside <value>), and sessionId.
 final class FSAPIGetParser: NSObject, XMLParserDelegate {
     private(set) var status = ""
     private(set) var value: String?
+    private(set) var sessionId: String?
     private var path: [String] = []
     private var text = ""
 
-    static func parse(_ data: Data) -> (status: String, value: String?) {
+    static func parse(_ data: Data) -> FSAPIGetParser {
         let handler = FSAPIGetParser()
         let parser = XMLParser(data: data)
         parser.delegate = handler
         parser.parse()
-        return (handler.status, handler.value)
+        return handler
     }
 
     func parser(_ parser: XMLParser, didStartElement name: String,
@@ -38,10 +51,11 @@ final class FSAPIGetParser: NSObject, XMLParserDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if name == "status" && parent == "fsapiResponse" { status = t }
         else if parent == "value" { value = t }
+        else if name == "sessionId" && parent == "fsapiResponse" { sessionId = t }
     }
 }
 
-/// Parses LIST_GET_NEXT: items with key attribute and named fields
+/// Parses LIST_GET_NEXT: items with key attribute and named fields.
 final class FSAPIListParser: NSObject, XMLParserDelegate {
     struct Item { let key: Int; var fields: [String: String] }
 
@@ -53,12 +67,12 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
     private var itemFields: [String: String] = [:]
     private var fieldName: String?
 
-    static func parse(_ data: Data) -> (status: String, items: [Item]) {
+    static func parse(_ data: Data) -> FSAPIListParser {
         let handler = FSAPIListParser()
         let parser = XMLParser(data: data)
         parser.delegate = handler
         parser.parse()
-        return (handler.status, handler.items)
+        return handler
     }
 
     func parser(_ parser: XMLParser, didStartElement name: String,
@@ -87,7 +101,7 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
     }
 }
 
-/// Parses GET_MULTIPLE: multiple <fsapiResponse> blocks inside <fsapiGetMultipleResponse>
+/// Parses GET_MULTIPLE: multiple <fsapiResponse> blocks inside <fsapiGetMultipleResponse>.
 final class FSAPIMultiParser: NSObject, XMLParserDelegate {
     private(set) var values: [String: String] = [:]
     private var path: [String] = []
@@ -132,60 +146,118 @@ final class FSAPIMultiParser: NSObject, XMLParserDelegate {
 
 // MARK: - FSAPI Client
 
+/// Handles HTTP communication with the radio. Uses session-based auth with automatic
+/// retry — matches the behavior of the CLI tool (CREATE_SESSION + sid= on all requests).
 actor FSAPIClient {
-    private let pin: String
+    let pin: String
+    private var sid: String?
     private let session: URLSession
 
     init(pin: String = "1234") {
         self.pin = pin
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 5
-        cfg.timeoutIntervalForResource = 8
+        cfg.timeoutIntervalForRequest = 3
+        cfg.timeoutIntervalForResource = 6
         self.session = URLSession(configuration: cfg)
     }
 
-    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
-        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)") else {
-            return ("FS_REQUEST_FAILED", nil)
-        }
+    func invalidateSession() {
+        Log("FSAPI: Session invalidated")
+        sid = nil
+    }
+
+    private func createSession(_ ip: String) async -> String? {
+        Log("FSAPI: Creating session on \(ip)")
+        guard let url = URL(string: "http://\(ip)/fsapi/CREATE_SESSION?pin=\(pin)") else { return nil }
         do {
             let (data, _) = try await session.data(from: url)
-            return FSAPIGetParser.parse(data)
-        } catch { return ("FS_REQUEST_FAILED", nil) }
+            let r = FSAPIGetParser.parse(data)
+            if r.status == "FS_OK", let newSid = r.sessionId {
+                Log("FSAPI: Session created: \(newSid)")
+                sid = newSid
+                return newSid
+            }
+            Log("FSAPI: Session creation failed: \(r.status)")
+            return nil
+        } catch {
+            Log("FSAPI: Session creation error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Core request method. Ensures a valid session, appends sid=, retries once on failure.
+    private func request(_ ip: String, path: String) async -> Data? {
+        for attempt in 0..<2 {
+            // Ensure we have a session
+            if sid == nil { _ = await createSession(ip) }
+            guard let currentSid = sid else {
+                Log("FSAPI: No session available (\(attempt))")
+                return nil
+            }
+
+            let urlStr = "http://\(ip)/fsapi/\(path)&sid=\(currentSid)"
+            guard let url = URL(string: urlStr) else {
+                Log("FSAPI: Invalid URL: \(urlStr)")
+                return nil
+            }
+
+            let start = Date()
+            do {
+                let (data, _) = try await session.data(from: url)
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                if data.isEmpty {
+                    Log("FSAPI: \(path) -> empty (\(ms)ms), invalidating session")
+                    sid = nil
+                    continue
+                }
+                Log("FSAPI: \(path) -> \(data.count)B (\(ms)ms)")
+                return data
+            } catch {
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                Log("FSAPI: \(path) -> error (\(ms)ms): \(error.localizedDescription)")
+                sid = nil
+                if attempt == 0 { continue }
+                return nil
+            }
+        }
+        return nil
+    }
+
+    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
+        guard let data = await request(ip, path: "GET/\(node)?pin=\(pin)") else {
+            return ("FS_REQUEST_FAILED", nil)
+        }
+        let r = FSAPIGetParser.parse(data)
+        return (r.status, r.value)
     }
 
     func set(_ ip: String, node: String, value: String) async -> String {
         let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
-        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(v)") else {
+        guard let data = await request(ip, path: "SET/\(node)?pin=\(pin)&value=\(v)") else {
             return "FS_REQUEST_FAILED"
         }
-        do {
-            let (data, _) = try await session.data(from: url)
-            return FSAPIGetParser.parse(data).status
-        } catch { return "FS_REQUEST_FAILED" }
+        return FSAPIGetParser.parse(data).status
     }
 
-    func list(_ ip: String, node: String, maxItems: Int = 100) async -> (status: String, items: [FSAPIListParser.Item]) {
-        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)") else {
-            return ("FS_REQUEST_FAILED", [])
+    func list(_ ip: String, node: String, maxItems: Int = 100) async -> FSAPIListParser {
+        guard let data = await request(ip, path: "LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)") else {
+            let r = FSAPIListParser()
+            return r
         }
-        do {
-            let (data, _) = try await session.data(from: url)
-            return FSAPIListParser.parse(data)
-        } catch { return ("FS_REQUEST_FAILED", []) }
+        return FSAPIListParser.parse(data)
     }
 
-    /// GET_MULTIPLE, chunked to 5 nodes per request (radio rejects long URLs)
+    /// GET_MULTIPLE, chunked to 5 nodes per request. Bails early if the radio is unreachable.
     func getMultiple(_ ip: String, nodes: [String]) async -> [String: String] {
         var result: [String: String] = [:]
         for i in stride(from: 0, to: nodes.count, by: 5) {
             let chunk = Array(nodes[i..<min(i + 5, nodes.count)])
             let q = chunk.map { "node=\($0)" }.joined(separator: "&")
-            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)") else { continue }
-            do {
-                let (data, _) = try await session.data(from: url)
-                result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
-            } catch { continue }
+            guard let data = await request(ip, path: "GET_MULTIPLE?pin=\(pin)&\(q)") else {
+                if result.isEmpty { return [:] } // first chunk failed — bail
+                break // subsequent failure — return what we have
+            }
+            result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
         }
         return result
     }
@@ -195,10 +267,14 @@ actor FSAPIClient {
 
 /// Discovers a Frontier Silicon radio on the local network via SSDP multicast.
 func discoverRadio(timeout: TimeInterval = 3) async -> String? {
-    await withCheckedContinuation { continuation in
+    Log("SSDP: Starting discovery (timeout \(timeout)s)")
+    return await withCheckedContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
             let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-            guard sock >= 0 else { continuation.resume(returning: nil); return }
+            guard sock >= 0 else {
+                Log("SSDP: Failed to create socket")
+                continuation.resume(returning: nil); return
+            }
             defer { close(sock) }
 
             var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
@@ -220,7 +296,10 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
                     }
                 }
             }
-            guard sent > 0 else { continuation.resume(returning: nil); return }
+            guard sent > 0 else {
+                Log("SSDP: sendto failed")
+                continuation.resume(returning: nil); return
+            }
 
             var buffer = [UInt8](repeating: 0, count: 4096)
             var sender = sockaddr_in()
@@ -233,13 +312,16 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
             }
 
             guard n > 0, let response = String(bytes: buffer[0..<n], encoding: .utf8) else {
+                Log("SSDP: No response received")
                 continuation.resume(returning: nil); return
             }
 
+            Log("SSDP: Got response (\(n) bytes)")
             for line in response.components(separatedBy: "\r\n") {
                 if line.uppercased().hasPrefix("LOCATION:") {
                     let urlStr = String(line.dropFirst("LOCATION:".count)).trimmingCharacters(in: .whitespaces)
                     if let url = URL(string: urlStr), let host = url.host {
+                        Log("SSDP: Found radio at \(host)")
                         continuation.resume(returning: host); return
                     }
                 }
@@ -247,7 +329,9 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
 
             var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &sender.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
-            continuation.resume(returning: String(cString: ipBuf))
+            let fallbackIP = String(cString: ipBuf)
+            Log("SSDP: Using sender IP as fallback: \(fallbackIP)")
+            continuation.resume(returning: fallbackIP)
         }
     }
 }
@@ -257,7 +341,12 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
 @MainActor
 final class RadioViewModel: ObservableObject {
     // Connection
-    @Published var radioIP: String { didSet { UserDefaults.standard.set(radioIP, forKey: "radioBarIP") } }
+    @Published var radioIP: String {
+        didSet {
+            UserDefaults.standard.set(radioIP, forKey: "radioBarIP")
+            Task { await client.invalidateSession() }
+        }
+    }
     @Published var radioPin: String { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
     @Published var isConnected = false
     @Published var isDiscovering = false
@@ -308,7 +397,7 @@ final class RadioViewModel: ObservableObject {
     var isDraggingSeek = false
     private var isPolling = false
     private var pollTimer: Timer?
-    private var client: FSAPIClient
+    private(set) var client: FSAPIClient
 
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
@@ -316,6 +405,7 @@ final class RadioViewModel: ObservableObject {
         self.radioIP = ip
         self.radioPin = pin
         self.client = FSAPIClient(pin: pin)
+        Log("APP: RadioViewModel init (ip=\(ip))")
         startPolling()
     }
 
@@ -354,12 +444,16 @@ final class RadioViewModel: ObservableObject {
         ])
 
         guard !vals.isEmpty else {
+            if isConnected { Log("VM: Lost connection to \(ip)") }
             isConnected = false
             connectionError = "Cannot reach radio at \(ip)"
             return
         }
+
+        let wasConnected = isConnected
         isConnected = true
         connectionError = nil
+        if !wasConnected { Log("VM: Connected to \(ip)") }
 
         power = vals["netRemote.sys.power"] == "1"
         radioName = vals["netRemote.sys.info.friendlyName"] ?? "Radio"
@@ -370,7 +464,10 @@ final class RadioViewModel: ObservableObject {
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
         playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
-        trackName = vals["netRemote.play.info.name"] ?? ""
+
+        let newTrack = vals["netRemote.play.info.name"] ?? ""
+        if newTrack != trackName { Log("VM: Now playing: \(newTrack)") }
+        trackName = newTrack
         artist = vals["netRemote.play.info.artist"] ?? ""
         infoText = vals["netRemote.play.info.text"] ?? ""
         if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
@@ -386,19 +483,24 @@ final class RadioViewModel: ObservableObject {
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
         modeId = newModeId
-        if modeChanged { browseItems = []; browseDepth = 0; browseTitle = "" }
+        if modeChanged {
+            Log("VM: Mode changed to \(newModeId)")
+            browseItems = []; browseDepth = 0; browseTitle = ""
+        }
 
         // Fetch modes + EQ presets once
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
             if r.status == "FS_OK" {
                 modes = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "Mode \($0.key)") }
+                Log("VM: Loaded \(modes.count) modes")
             }
         }
         if eqPresets.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.eqPresets")
             if r.status == "FS_OK" {
                 eqPresets = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "EQ \($0.key)") }
+                Log("VM: Loaded \(eqPresets.count) EQ presets")
             }
         }
         modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
@@ -415,16 +517,27 @@ final class RadioViewModel: ObservableObject {
         client = FSAPIClient(pin: newPin)
     }
 
+    func reconnect() async {
+        Log("VM: Reconnecting")
+        await client.invalidateSession()
+        isConnected = false
+        connectionError = nil
+        modes = []; eqPresets = []; presets = []
+        await poll()
+    }
+
     // MARK: Actions
 
     func togglePower() async {
+        Log("VM: Toggle power (currently \(power ? "on" : "off"))")
         _ = await client.set(radioIP, node: "netRemote.sys.power", value: power ? "0" : "1")
         try? await Task.sleep(nanoseconds: 500_000_000)
         await poll()
     }
 
     func setVolume(_ vol: Int) async {
-        _ = await client.set(radioIP, node: "netRemote.sys.audio.volume", value: "\(max(0, min(Int(maxVolume), vol)))")
+        let v = max(0, min(Int(maxVolume), vol))
+        _ = await client.set(radioIP, node: "netRemote.sys.audio.volume", value: "\(v)")
     }
 
     func toggleMute() async {
@@ -433,15 +546,23 @@ final class RadioViewModel: ObservableObject {
     }
 
     func setEqPreset(_ id: Int) async {
+        Log("VM: Set EQ preset \(id)")
         _ = await client.set(radioIP, node: "netRemote.sys.audio.eqPreset", value: "\(id)")
         eqPresetId = id
     }
 
     func seekTo(_ ms: Int) async {
-        _ = await client.set(radioIP, node: "netRemote.play.position", value: "\(max(0, ms))")
+        let clamped = max(0, min(ms, duration))
+        Log("VM: Seek to \(clamped)ms (duration=\(duration)ms)")
+        let result = await client.set(radioIP, node: "netRemote.play.position", value: "\(clamped)")
+        Log("VM: Seek result: \(result)")
+        // Hold off poll updates briefly so the bar doesn't snap back
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        isDraggingSeek = false
     }
 
     func playPause() async {
+        Log("VM: Play/pause (currently \(playStatus))")
         _ = await client.set(radioIP, node: "netRemote.play.control", value: playStatus == "playing" ? "2" : "1")
         try? await Task.sleep(nanoseconds: 300_000_000)
         await poll()
@@ -466,12 +587,14 @@ final class RadioViewModel: ObservableObject {
     }
 
     func setMode(_ id: Int) async {
+        Log("VM: Set mode \(id)")
         _ = await client.set(radioIP, node: "netRemote.sys.mode", value: "\(id)")
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         await poll()
     }
 
     func selectPreset(_ key: Int) async {
+        Log("VM: Select preset \(key)")
         _ = await client.set(radioIP, node: "netRemote.nav.action.selectPreset", value: "\(key)")
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         await poll()
@@ -480,30 +603,35 @@ final class RadioViewModel: ObservableObject {
     // MARK: Browse
 
     func startBrowse() async {
+        Log("VM: Start browse")
         _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
         try? await Task.sleep(nanoseconds: 200_000_000)
         await fetchBrowseItems()
     }
 
     func browseInto(_ key: Int) async {
+        Log("VM: Browse into \(key)")
         _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
         try? await Task.sleep(nanoseconds: 300_000_000)
         await fetchBrowseItems()
     }
 
     func browseBack() async {
+        Log("VM: Browse back")
         _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
         try? await Task.sleep(nanoseconds: 300_000_000)
         await fetchBrowseItems()
     }
 
     func browseSelect(_ key: Int) async {
+        Log("VM: Browse select \(key)")
         _ = await client.set(radioIP, node: "netRemote.nav.action.selectItem", value: "\(key)")
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         await poll()
     }
 
     func browseSearch(_ term: String) async {
+        Log("VM: Search '\(term)'")
         _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
         try? await Task.sleep(nanoseconds: 200_000_000)
         _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
@@ -528,6 +656,7 @@ final class RadioViewModel: ObservableObject {
             browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
             let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
+            Log("VM: Browse fetch attempt \(attempt): \(numItems) items, depth=\(browseDepth), title=\(browseTitle)")
             if numItems == 0 && attempt < 3 { continue }
             guard numItems > 0 else { browseItems = []; return }
 
@@ -538,6 +667,7 @@ final class RadioViewModel: ObservableObject {
                      name: item.fields["name"] ?? "Item \(item.key)",
                      isFolder: item.fields["type"] == "0")
                 }
+                Log("VM: Browse loaded \(browseItems.count) items")
                 return
             }
         }
@@ -547,11 +677,15 @@ final class RadioViewModel: ObservableObject {
     // MARK: Alarms
 
     func fetchAlarms() async {
+        Log("VM: Fetching alarms")
         let r = await client.list(radioIP, node: "netRemote.sys.alarm.config")
         if r.status == "FS_OK" {
             alarms = r.items.map { (key: $0.key, fields: $0.fields) }
+            Log("VM: Loaded \(alarms.count) alarms")
         }
     }
+
+    // MARK: Discovery
 
     func discover() async {
         isDiscovering = true
@@ -688,6 +822,8 @@ struct RadioMenuView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
             settingsFields
+            Button("Reconnect") { Task { await vm.reconnect() } }
+                .controlSize(.small)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -715,7 +851,6 @@ struct RadioMenuView: View {
 
     private var nowPlayingView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Header
             HStack {
                 Text(vm.radioName).font(.caption).foregroundColor(.secondary)
                 Spacer()
@@ -726,7 +861,6 @@ struct RadioMenuView: View {
                 .buttonStyle(.borderless).foregroundColor(.red).help("Standby")
             }
 
-            // Track info
             HStack(alignment: .top, spacing: 10) {
                 if let url = vm.artworkURL {
                     AsyncImage(url: url) { phase in
@@ -750,7 +884,9 @@ struct RadioMenuView: View {
                 }
             }
 
-            // Seek bar (only for finite content like podcasts/Spotify, not live radio)
+            // Seek bar — only for finite-length content (podcasts, Spotify, USB — not live radio)
+            // Note: seeking (SET play.position) may not work in all modes. The bar still serves
+            // as a visual progress indicator even when seeking isn't supported.
             if vm.duration > 0 {
                 seekBarView
             }
@@ -758,19 +894,24 @@ struct RadioMenuView: View {
     }
 
     private var seekBarView: some View {
-        HStack(spacing: 4) {
+        let safeMax = Double(max(1, vm.duration))
+        let safePos = min(Double(vm.position), safeMax)
+        return HStack(spacing: 4) {
             Text(fmtTime(vm.position)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
             Slider(
                 value: Binding(
-                    get: { Double(vm.position) },
+                    get: { safePos },
                     set: { vm.position = Int($0) }
                 ),
-                in: 0...Double(max(1, vm.duration)),
+                in: 0...safeMax,
                 step: 1000
             ) { EmptyView() }
                 onEditingChanged: { editing in
-                    vm.isDraggingSeek = editing
-                    if !editing { Task { await vm.seekTo(vm.position) } }
+                    if editing {
+                        vm.isDraggingSeek = true
+                    } else {
+                        Task { await vm.seekTo(vm.position) }
+                    }
                 }
             Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
         }
@@ -832,8 +973,14 @@ struct RadioMenuView: View {
 
             Slider(value: $vm.volume, in: 0...vm.maxVolume, step: 1) { EmptyView() }
                 onEditingChanged: { editing in
-                    vm.isDraggingVolume = editing
-                    if !editing { Task { await vm.setVolume(Int(vm.volume)) } }
+                    if editing {
+                        vm.isDraggingVolume = true
+                    } else {
+                        Task {
+                            await vm.setVolume(Int(vm.volume))
+                            vm.isDraggingVolume = false
+                        }
+                    }
                 }
 
             Text("\(Int(vm.volume))")
@@ -939,7 +1086,6 @@ struct RadioMenuView: View {
 
     private var browseContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Search
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.secondary)
                 TextField("Search \(vm.modeName)...", text: $searchText)
@@ -960,7 +1106,6 @@ struct RadioMenuView: View {
                 }
             }
 
-            // Navigation bar
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
                     Button(action: { Task { await vm.browseBack() } }) {
@@ -978,7 +1123,6 @@ struct RadioMenuView: View {
                 Spacer()
             }
 
-            // Items
             if vm.isBrowseLoading {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .padding(.vertical, 12)
@@ -1112,7 +1256,11 @@ struct RadioMenuView: View {
             if showSettings && vm.isConnected {
                 VStack(alignment: .leading, spacing: 4) {
                     settingsFields
-                    Button("Done") { showSettings = false }.controlSize(.small)
+                    HStack {
+                        Button("Reconnect") { Task { await vm.reconnect() } }.controlSize(.small)
+                        Spacer()
+                        Button("Done") { showSettings = false }.controlSize(.small)
+                    }
                 }
             } else {
                 Button(action: { withAnimation { showSettings.toggle() } }) {
@@ -1141,7 +1289,6 @@ struct RadioMenuView: View {
     }
 
     private func formatAlarmTime(_ raw: String) -> String {
-        // Handle seconds-since-midnight (numeric) or HH:MM string
         if let secs = Int(raw) {
             let h = secs / 3600, m = (secs % 3600) / 60
             return String(format: "%02d:%02d", h, m)
@@ -1167,6 +1314,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !CommandLine.arguments.contains("--dock") {
             NSApp.setActivationPolicy(.accessory)
         }
+        Log("APP: Launched (dock=\(CommandLine.arguments.contains("--dock")), debug=true)")
     }
 }
 

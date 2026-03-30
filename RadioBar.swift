@@ -155,7 +155,8 @@ actor FSAPIClient {
     }
 
     func set(_ ip: String, node: String, value: String) async -> String {
-        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(value)") else {
+        let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(v)") else {
             return "FS_REQUEST_FAILED"
         }
         do {
@@ -235,7 +236,6 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
                 continuation.resume(returning: nil); return
             }
 
-            // Extract IP from LOCATION header
             for line in response.components(separatedBy: "\r\n") {
                 if line.uppercased().hasPrefix("LOCATION:") {
                     let urlStr = String(line.dropFirst("LOCATION:".count)).trimmingCharacters(in: .whitespaces)
@@ -245,7 +245,6 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
                 }
             }
 
-            // Fallback: sender IP
             var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &sender.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
             continuation.resume(returning: String(cString: ipBuf))
@@ -286,14 +285,27 @@ final class RadioViewModel: ObservableObject {
     @Published var modes: [(id: Int, label: String)] = []
     @Published var presets: [(key: Int, name: String)] = []
 
+    // EQ
+    @Published var eqPresets: [(id: Int, label: String)] = []
+    @Published var eqPresetId = 0
+
     // Browse
     @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
     @Published var browseTitle = ""
     @Published var browseDepth = 0
     @Published var isBrowseLoading = false
 
+    // Alarms
+    @Published var alarms: [(key: Int, fields: [String: String])] = []
+
+    // Spotify
+    @Published var spotifyUser = ""
+    @Published var spotifyBitRate = ""
+    var isSpotifyMode: Bool { modeName.lowercased().contains("spotify") }
+
     // Internal
     var isDraggingVolume = false
+    var isDraggingSeek = false
     private var isPolling = false
     private var pollTimer: Timer?
     private var client: FSAPIClient
@@ -327,6 +339,7 @@ final class RadioViewModel: ObservableObject {
             "netRemote.sys.mode",
             "netRemote.sys.audio.volume",
             "netRemote.sys.audio.mute",
+            "netRemote.sys.audio.eqPreset",
             "netRemote.sys.caps.volumeSteps",
             "netRemote.play.status",
             "netRemote.play.info.name",
@@ -336,6 +349,8 @@ final class RadioViewModel: ObservableObject {
             "netRemote.play.info.duration",
             "netRemote.play.position",
             "netRemote.sys.info.friendlyName",
+            "netRemote.spotify.username",
+            "netRemote.spotify.bitRate",
         ])
 
         guard !vals.isEmpty else {
@@ -351,6 +366,7 @@ final class RadioViewModel: ObservableObject {
         if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
         if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { volume = v }
         muted = vals["netRemote.sys.audio.mute"] == "1"
+        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { eqPresetId = v }
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
         playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
@@ -360,18 +376,29 @@ final class RadioViewModel: ObservableObject {
         if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
         else { artworkURL = nil }
         if let d = vals["netRemote.play.info.duration"], let v = Int(d) { duration = v }
-        if let p = vals["netRemote.play.position"], let v = Int(p) { position = v }
+        if !isDraggingSeek, let p = vals["netRemote.play.position"], let v = Int(p) { position = v }
+
+        // Spotify
+        spotifyUser = vals["netRemote.spotify.username"] ?? ""
+        let brMap = ["0": "Low", "1": "Normal", "2": "High", "3": "Very High"]
+        spotifyBitRate = brMap[vals["netRemote.spotify.bitRate"] ?? ""] ?? ""
 
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
         modeId = newModeId
         if modeChanged { browseItems = []; browseDepth = 0; browseTitle = "" }
 
-        // Fetch modes list once
+        // Fetch modes + EQ presets once
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
             if r.status == "FS_OK" {
                 modes = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "Mode \($0.key)") }
+            }
+        }
+        if eqPresets.isEmpty {
+            let r = await client.list(ip, node: "netRemote.sys.caps.eqPresets")
+            if r.status == "FS_OK" {
+                eqPresets = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "EQ \($0.key)") }
             }
         }
         modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
@@ -403,6 +430,15 @@ final class RadioViewModel: ObservableObject {
     func toggleMute() async {
         _ = await client.set(radioIP, node: "netRemote.sys.audio.mute", value: muted ? "0" : "1")
         muted.toggle()
+    }
+
+    func setEqPreset(_ id: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.sys.audio.eqPreset", value: "\(id)")
+        eqPresetId = id
+    }
+
+    func seekTo(_ ms: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.play.position", value: "\(max(0, ms))")
     }
 
     func playPause() async {
@@ -467,13 +503,19 @@ final class RadioViewModel: ObservableObject {
         await poll()
     }
 
+    func browseSearch(_ term: String) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await fetchBrowseItems()
+    }
+
     private func fetchBrowseItems() async {
         let ip = radioIP
         isBrowseLoading = true
         defer { isBrowseLoading = false }
 
-        // The radio's nav layer can take a moment to populate after enable/navigate.
-        // Retry a few times if numItems is 0 or the list fetch fails.
         for attempt in 0..<4 {
             if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
 
@@ -500,6 +542,15 @@ final class RadioViewModel: ObservableObject {
             }
         }
         browseItems = []
+    }
+
+    // MARK: Alarms
+
+    func fetchAlarms() async {
+        let r = await client.list(radioIP, node: "netRemote.sys.alarm.config")
+        if r.status == "FS_OK" {
+            alarms = r.items.map { (key: $0.key, fields: $0.fields) }
+        }
     }
 
     func discover() async {
@@ -582,9 +633,11 @@ enum ContentTab: String, CaseIterable { case presets, browse }
 struct RadioMenuView: View {
     @ObservedObject var vm: RadioViewModel
     @State private var showSettings = false
+    @State private var showAlarms = false
     @State private var ipField = ""
     @State private var pinField = ""
     @State private var contentTab: ContentTab = .presets
+    @State private var searchText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -599,12 +652,17 @@ struct RadioMenuView: View {
                 controlsView
                 Divider().padding(.vertical, 4)
                 volumeView
-                if !vm.modes.isEmpty {
+                if !vm.modes.isEmpty || !vm.eqPresets.isEmpty {
                     Divider().padding(.vertical, 4)
-                    modeView
+                    modeEqView
+                }
+                if vm.isSpotifyMode && !vm.spotifyUser.isEmpty {
+                    spotifyView
                 }
                 Divider().padding(.vertical, 4)
                 contentTabsView
+                Divider().padding(.vertical, 4)
+                alarmsView
                 Divider().padding(.vertical, 4)
             }
             bottomBar
@@ -692,22 +750,31 @@ struct RadioMenuView: View {
                 }
             }
 
-            // Progress bar
+            // Seek bar (only for finite content like podcasts/Spotify, not live radio)
             if vm.duration > 0 {
-                HStack(spacing: 4) {
-                    Text(fmtTime(vm.position)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary).frame(height: 3)
-                            Capsule().fill(Color.accentColor)
-                                .frame(width: geo.size.width * CGFloat(vm.position) / CGFloat(max(1, vm.duration)), height: 3)
-                        }
-                    }.frame(height: 3)
-                    Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
-                }
-                .padding(.top, 2)
+                seekBarView
             }
         }
+    }
+
+    private var seekBarView: some View {
+        HStack(spacing: 4) {
+            Text(fmtTime(vm.position)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+            Slider(
+                value: Binding(
+                    get: { Double(vm.position) },
+                    set: { vm.position = Int($0) }
+                ),
+                in: 0...Double(max(1, vm.duration)),
+                step: 1000
+            ) { EmptyView() }
+                onEditingChanged: { editing in
+                    vm.isDraggingSeek = editing
+                    if !editing { Task { await vm.seekTo(vm.position) } }
+                }
+            Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+        }
+        .padding(.top, 2)
     }
 
     private var statusBadge: some View {
@@ -783,24 +850,52 @@ struct RadioMenuView: View {
         return "speaker.wave.3.fill"
     }
 
-    // MARK: Mode
+    // MARK: Mode & EQ
 
-    private var modeView: some View {
-        HStack {
-            Text("Mode").font(.caption).foregroundColor(.secondary)
-            Spacer()
-            Picker("", selection: Binding(
-                get: { vm.modeId },
-                set: { id in Task { await vm.setMode(id) } }
-            )) {
-                ForEach(vm.modes, id: \.id) { mode in
-                    Text(mode.label).tag(mode.id)
+    private var modeEqView: some View {
+        HStack(spacing: 8) {
+            if !vm.modes.isEmpty {
+                Text("Mode").font(.caption).foregroundColor(.secondary)
+                Picker("", selection: Binding(
+                    get: { vm.modeId },
+                    set: { id in Task { await vm.setMode(id) } }
+                )) {
+                    ForEach(vm.modes, id: \.id) { mode in
+                        Text(mode.label).tag(mode.id)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.menu)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: 180)
+            if !vm.eqPresets.isEmpty {
+                Spacer()
+                Text("EQ").font(.caption).foregroundColor(.secondary)
+                Picker("", selection: Binding(
+                    get: { vm.eqPresetId },
+                    set: { id in Task { await vm.setEqPreset(id) } }
+                )) {
+                    ForEach(vm.eqPresets, id: \.id) { eq in
+                        Text(eq.label).tag(eq.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
         }
+    }
+
+    // MARK: Spotify
+
+    private var spotifyView: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "headphones").font(.system(size: 9)).foregroundColor(.green)
+            Text(vm.spotifyUser).font(.system(size: 10)).foregroundColor(.secondary)
+            if !vm.spotifyBitRate.isEmpty {
+                Text("·").foregroundColor(.secondary)
+                Text(vm.spotifyBitRate).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+        }
+        .padding(.top, 2)
     }
 
     // MARK: Content Tabs (Presets / Browse)
@@ -844,6 +939,27 @@ struct RadioMenuView: View {
 
     private var browseContent: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // Search
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.secondary)
+                TextField("Search \(vm.modeName)...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .onSubmit {
+                        guard !searchText.isEmpty else { return }
+                        Task { await vm.browseSearch(searchText) }
+                    }
+                if !searchText.isEmpty {
+                    Button(action: {
+                        searchText = ""
+                        Task { await vm.startBrowse() }
+                    }) {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
             // Navigation bar
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
@@ -891,6 +1007,70 @@ struct RadioMenuView: View {
                 await vm.startBrowse()
             }
         }
+    }
+
+    // MARK: Alarms
+
+    private var alarmsView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: {
+                showAlarms.toggle()
+                if showAlarms && vm.alarms.isEmpty { Task { await vm.fetchAlarms() } }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "alarm").font(.system(size: 10))
+                    Text("Alarms").font(.caption)
+                    Spacer()
+                    Image(systemName: showAlarms ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.borderless)
+
+            if showAlarms {
+                if vm.alarms.isEmpty {
+                    Text("No alarms configured")
+                        .font(.caption).foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    VStack(spacing: 2) {
+                        ForEach(vm.alarms, id: \.key) { alarm in
+                            alarmRow(alarm)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func alarmRow(_ alarm: (key: Int, fields: [String: String])) -> some View {
+        let f = alarm.fields
+        let enabled = f["enable"] == "1"
+        let time = formatAlarmTime(f["time"] ?? f["timeHour"].flatMap { h in
+            f["timeMinute"].map { m in "\(h):\(m)" }
+        } ?? "")
+        let days = formatWeekdays(f["weekdays"])
+        let vol = f["volume"]
+
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(enabled ? Color.green : Color.secondary.opacity(0.3))
+                .frame(width: 6, height: 6)
+            Text(time)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+            if let days = days {
+                Text(days).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            Spacer()
+            if let vol = vol {
+                Image(systemName: "speaker.wave.1.fill").font(.system(size: 8)).foregroundColor(.secondary)
+                Text(vol).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .opacity(enabled ? 1.0 : 0.5)
     }
 
     // MARK: Settings
@@ -958,6 +1138,25 @@ struct RadioMenuView: View {
         let total = ms / 1000
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
+    private func formatAlarmTime(_ raw: String) -> String {
+        // Handle seconds-since-midnight (numeric) or HH:MM string
+        if let secs = Int(raw) {
+            let h = secs / 3600, m = (secs % 3600) / 60
+            return String(format: "%02d:%02d", h, m)
+        }
+        return raw.isEmpty ? "--:--" : raw
+    }
+
+    private func formatWeekdays(_ raw: String?) -> String? {
+        guard let raw = raw, let mask = Int(raw), mask > 0 else { return nil }
+        if mask == 127 { return "Every day" }
+        if mask == 31 { return "Weekdays" }
+        if mask == 96 { return "Weekends" }
+        let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        let active = (0..<7).filter { mask & (1 << $0) != 0 }.map { days[$0] }
+        return active.joined(separator: " ")
     }
 }
 

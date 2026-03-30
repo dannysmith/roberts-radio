@@ -286,6 +286,12 @@ final class RadioViewModel: ObservableObject {
     @Published var modes: [(id: Int, label: String)] = []
     @Published var presets: [(key: Int, name: String)] = []
 
+    // Browse
+    @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
+    @Published var browseTitle = ""
+    @Published var browseDepth = 0
+    @Published var isBrowseLoading = false
+
     // Internal
     var isDraggingVolume = false
     private var isPolling = false
@@ -359,6 +365,7 @@ final class RadioViewModel: ObservableObject {
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
         modeId = newModeId
+        if modeChanged { browseItems = []; browseDepth = 0; browseTitle = "" }
 
         // Fetch modes list once
         if modes.isEmpty {
@@ -434,6 +441,60 @@ final class RadioViewModel: ObservableObject {
         await poll()
     }
 
+    // MARK: Browse
+
+    func startBrowse() async {
+        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        await fetchBrowseItems()
+    }
+
+    func browseInto(_ key: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await fetchBrowseItems()
+    }
+
+    func browseBack() async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await fetchBrowseItems()
+    }
+
+    func browseSelect(_ key: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.selectItem", value: "\(key)")
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await poll()
+    }
+
+    private func fetchBrowseItems() async {
+        let ip = radioIP
+        isBrowseLoading = true
+        defer { isBrowseLoading = false }
+
+        let info = await client.getMultiple(ip, nodes: [
+            "netRemote.nav.depth",
+            "netRemote.nav.currentTitle",
+            "netRemote.nav.numItems",
+        ])
+        browseDepth = Int(info["netRemote.nav.depth"] ?? "0") ?? 0
+        browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
+
+        let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
+        guard numItems > 0 else { browseItems = []; return }
+
+        let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
+        if r.status == "FS_OK" {
+            browseItems = r.items.map { item in
+                (key: item.key,
+                 name: item.fields["name"] ?? "Item \(item.key)",
+                 isFolder: item.fields["type"] == "0")
+            }
+        } else {
+            browseItems = []
+        }
+    }
+
     func discover() async {
         isDiscovering = true
         defer { isDiscovering = false }
@@ -476,11 +537,47 @@ struct PresetRow: View {
     }
 }
 
+struct BrowseRow: View {
+    let name: String
+    let isFolder: Bool
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: isFolder ? "folder.fill" : "music.note")
+                    .font(.system(size: 10))
+                    .foregroundColor(isFolder ? Color.accentColor : .secondary)
+                    .frame(width: 14)
+                Text(name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                Spacer()
+                if isFolder {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .background(RoundedRectangle(cornerRadius: 4).fill(hovered ? Color.accentColor.opacity(0.15) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+enum ContentTab: String, CaseIterable { case presets, browse }
+
 struct RadioMenuView: View {
     @ObservedObject var vm: RadioViewModel
     @State private var showSettings = false
     @State private var ipField = ""
     @State private var pinField = ""
+    @State private var contentTab: ContentTab = .presets
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -499,10 +596,8 @@ struct RadioMenuView: View {
                     Divider().padding(.vertical, 4)
                     modeView
                 }
-                if !vm.presets.isEmpty {
-                    Divider().padding(.vertical, 4)
-                    presetsView
-                }
+                Divider().padding(.vertical, 4)
+                contentTabsView
                 Divider().padding(.vertical, 4)
             }
             bottomBar
@@ -701,21 +796,93 @@ struct RadioMenuView: View {
         }
     }
 
-    // MARK: Presets
+    // MARK: Content Tabs (Presets / Browse)
 
-    private var presetsView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Presets").font(.caption).foregroundColor(.secondary)
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(vm.presets, id: \.key) { preset in
-                        PresetRow(number: preset.key + 1, name: preset.name) {
-                            Task { await vm.selectPreset(preset.key) }
+    private var contentTabsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("", selection: $contentTab) {
+                Text("Presets").tag(ContentTab.presets)
+                Text("Browse").tag(ContentTab.browse)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch contentTab {
+            case .presets: presetsContent
+            case .browse: browseContent
+            }
+        }
+    }
+
+    private var presetsContent: some View {
+        Group {
+            if vm.presets.isEmpty {
+                Text("No presets for this mode")
+                    .font(.caption).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(vm.presets, id: \.key) { preset in
+                            PresetRow(number: preset.key + 1, name: preset.name) {
+                                Task { await vm.selectPreset(preset.key) }
+                            }
                         }
                     }
                 }
+                .frame(maxHeight: 150)
             }
-            .frame(maxHeight: 130)
+        }
+    }
+
+    private var browseContent: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Navigation bar
+            HStack(spacing: 4) {
+                if vm.browseDepth > 0 {
+                    Button(action: { Task { await vm.browseBack() } }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.left").font(.system(size: 10))
+                            Text("Back").font(.system(size: 11))
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Text(vm.browseTitle.isEmpty ? vm.modeName : vm.browseTitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+
+            // Items
+            if vm.isBrowseLoading {
+                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                    .padding(.vertical, 12)
+            } else if vm.browseItems.isEmpty {
+                Text("No items")
+                    .font(.caption).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(vm.browseItems, id: \.key) { item in
+                            BrowseRow(name: item.name, isFolder: item.isFolder) {
+                                Task {
+                                    if item.isFolder { await vm.browseInto(item.key) }
+                                    else { await vm.browseSelect(item.key) }
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+        .task(id: contentTab) {
+            if contentTab == .browse && vm.browseItems.isEmpty {
+                await vm.startBrowse()
+            }
         }
     }
 

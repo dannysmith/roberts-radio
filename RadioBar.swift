@@ -321,6 +321,7 @@ final class RadioViewModel: ObservableObject {
     // Internal
     var isDraggingVolume = false
     private var isPolling = false
+    private var presetsLoaded = false
     private var pollTimer: Timer?
     private var client: FSAPIClient
 
@@ -407,6 +408,7 @@ final class RadioViewModel: ObservableObject {
         if modeChanged {
             Log("VM: Mode changed to \(newModeId)")
             browseItems = []; browseDepth = 0; browseTitle = ""
+            presetsLoaded = false
         }
 
         // Fetch modes list once
@@ -424,8 +426,9 @@ final class RadioViewModel: ObservableObject {
         }
         modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
 
-        // Fetch presets on mode change
-        if power && (modeChanged || presets.isEmpty) {
+        // Fetch presets on connect and mode change (not every poll)
+        if power && !presetsLoaded {
+            presetsLoaded = true
             let r = await client.list(ip, node: "netRemote.nav.presets")
             presets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
         }

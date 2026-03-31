@@ -3,6 +3,7 @@
 
 import SwiftUI
 import Foundation
+import Observation
 
 // MARK: - Debug Logging
 
@@ -338,69 +339,73 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
 
 // MARK: - View Model
 
+/// Uses @Observable for per-property SwiftUI tracking: when `position` changes, only the
+/// seek bar re-renders — not the entire view tree. This is critical for responsive UI since
+/// position changes every poll cycle during playback.
+@Observable
 @MainActor
-final class RadioViewModel: ObservableObject {
+final class RadioViewModel {
     // Connection
-    @Published var radioIP: String {
+    var radioIP: String = "" {
         didSet {
             UserDefaults.standard.set(radioIP, forKey: "radioBarIP")
             Task { await client.invalidateSession() }
         }
     }
-    @Published var radioPin: String { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
-    @Published var isConnected = false
-    @Published var isDiscovering = false
-    @Published var connectionError: String?
+    var radioPin: String = "" { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
+    var isConnected = false
+    var isDiscovering = false
+    var connectionError: String?
 
     // State
-    @Published var power = false
-    @Published var radioName = ""
-    @Published var modeName = ""
-    @Published var modeId = 0
-    @Published var volume: Double = 0
-    @Published var maxVolume: Double = 31
-    @Published var muted = false
+    var power = false
+    var radioName = ""
+    var modeName = ""
+    var modeId = 0
+    var volume: Double = 0
+    var maxVolume: Double = 31
+    var muted = false
 
     // Now playing
-    @Published var playStatus = "stopped"
-    @Published var trackName = ""
-    @Published var artist = ""
-    @Published var infoText = ""
-    @Published var artworkURL: URL?
-    @Published var position = 0
-    @Published var duration = 0
+    var playStatus = "stopped"
+    var trackName = ""
+    var artist = ""
+    var infoText = ""
+    var artworkURL: URL?
+    var position = 0
+    var duration = 0
 
     // Lists
-    @Published var modes: [(id: Int, label: String)] = []
-    @Published var presets: [(key: Int, name: String)] = []
+    var modes: [(id: Int, label: String)] = []
+    var presets: [(key: Int, name: String)] = []
 
     // EQ
-    @Published var eqPresets: [(id: Int, label: String)] = []
-    @Published var eqPresetId = 0
+    var eqPresets: [(id: Int, label: String)] = []
+    var eqPresetId = 0
 
     // Browse
-    @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
-    @Published var browseTitle = ""
-    @Published var browseDepth = 0
-    @Published var isBrowseLoading = false
+    var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
+    var browseTitle = ""
+    var browseDepth = 0
+    var isBrowseLoading = false
 
     // Alarms
-    @Published var alarms: [(key: Int, fields: [String: String])] = []
+    var alarms: [(key: Int, fields: [String: String])] = []
 
     // Spotify
-    @Published var spotifyUser = ""
-    @Published var spotifyBitRate = ""
+    var spotifyUser = ""
+    var spotifyBitRate = ""
     var isSpotifyMode: Bool { modeName.lowercased().contains("spotify") }
 
-    // Internal
-    var isDraggingVolume = false
-    var isDraggingSeek = false
-    private var isPolling = false
-    private var presetsLoaded = false
-    private var pollTimer: Timer?
-    private(set) var client: FSAPIClient
+    // Internal — excluded from observation so changes don't trigger any re-renders
+    @ObservationIgnored var isDraggingVolume = false
+    @ObservationIgnored var isDraggingSeek = false
+    @ObservationIgnored private var isPolling = false
+    @ObservationIgnored private var presetsLoaded = false
+    @ObservationIgnored private var pollTimer: Timer?
+    @ObservationIgnored private(set) var client: FSAPIClient
 
-    /// Only fires objectWillChange (and triggers SwiftUI re-render) when the value actually differs.
+    /// Only writes (and triggers observation notification) when the value actually differs.
     private func set<T: Equatable>(_ kp: ReferenceWritableKeyPath<RadioViewModel, T>, _ v: T) {
         if self[keyPath: kp] != v { self[keyPath: kp] = v }
     }
@@ -408,8 +413,9 @@ final class RadioViewModel: ObservableObject {
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
         let pin = UserDefaults.standard.string(forKey: "radioBarPIN") ?? "1234"
-        self.radioIP = ip
-        self.radioPin = pin
+        // Use _radioIP/_radioPin to set backing storage without triggering didSet
+        _radioIP = ip
+        _radioPin = pin
         self.client = FSAPIClient(pin: pin)
         Log("APP: RadioViewModel init (ip=\(ip))")
         startPolling()
@@ -777,7 +783,7 @@ struct BrowseRow: View {
 enum ContentTab: String, CaseIterable { case presets, browse }
 
 struct RadioMenuView: View {
-    @ObservedObject var vm: RadioViewModel
+    @Bindable var vm: RadioViewModel
     @State private var showSettings = false
     @State private var showAlarms = false
     @State private var ipField = ""
@@ -1333,7 +1339,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct RadioBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var vm = RadioViewModel()
+    @State private var vm = RadioViewModel()
 
     var body: some Scene {
         MenuBarExtra {

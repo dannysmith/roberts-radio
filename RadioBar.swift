@@ -497,117 +497,140 @@ final class RadioViewModel {
         await poll()
     }
 
-    // MARK: Actions
+    // MARK: Actions — fire-and-forget with optimistic UI updates
+    // All actions update local state immediately, then send the SET in the background.
+    // The regular 4-second poll syncs actual radio state. No sleeps, no blocking.
 
-    func togglePower() async {
+    private func fire(_ node: String, _ value: String) {
+        let ip = radioIP
+        Task { _ = await client.set(ip, node: node, value: value) }
+    }
+
+    func togglePower() {
         Log("VM: Toggle power (currently \(power ? "on" : "off"))")
-        _ = await client.set(radioIP, node: "netRemote.sys.power", value: power ? "0" : "1")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+        power.toggle()
+        fire("netRemote.sys.power", power ? "1" : "0")
     }
 
-    func setVolume(_ vol: Int) async {
-        let v = max(0, min(Int(maxVolume), vol))
-        _ = await client.set(radioIP, node: "netRemote.sys.audio.volume", value: "\(v)")
+    func setVolume(_ vol: Int) {
+        fire("netRemote.sys.audio.volume", "\(max(0, min(Int(maxVolume), vol)))")
     }
 
-    func toggleMute() async {
-        _ = await client.set(radioIP, node: "netRemote.sys.audio.mute", value: muted ? "0" : "1")
+    func toggleMute() {
         muted.toggle()
+        fire("netRemote.sys.audio.mute", muted ? "1" : "0")
     }
 
-    func setEqPreset(_ id: Int) async {
+    func setEqPreset(_ id: Int) {
         Log("VM: Set EQ preset \(id)")
-        _ = await client.set(radioIP, node: "netRemote.sys.audio.eqPreset", value: "\(id)")
         eqPresetId = id
+        fire("netRemote.sys.audio.eqPreset", "\(id)")
     }
 
-    func seekTo(_ ms: Int) async {
+    func seekTo(_ ms: Int) {
         let clamped = max(0, min(ms, duration))
-        Log("VM: Seek to \(clamped)ms (duration=\(duration)ms)")
-        let result = await client.set(radioIP, node: "netRemote.play.position", value: "\(clamped)")
-        Log("VM: Seek result: \(result)")
-        // Hold off poll updates briefly so the bar doesn't snap back
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        isDraggingSeek = false
+        Log("VM: Seek to \(clamped)ms")
+        position = clamped
+        fire("netRemote.play.position", "\(clamped)")
+        // Release the drag lock after a short delay so the poll doesn't snap back
+        // before the radio has processed the seek
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            isDraggingSeek = false
+        }
     }
 
-    func playPause() async {
-        Log("VM: Play/pause (currently \(playStatus))")
-        _ = await client.set(radioIP, node: "netRemote.play.control", value: playStatus == "playing" ? "2" : "1")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await poll()
+    func playPause() {
+        let newStatus = playStatus == "playing" ? "paused" : "playing"
+        Log("VM: \(newStatus)")
+        playStatus = newStatus
+        fire("netRemote.play.control", playStatus == "playing" ? "1" : "2")
     }
 
-    func stop() async {
-        _ = await client.set(radioIP, node: "netRemote.play.control", value: "0")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await poll()
+    func stop() {
+        playStatus = "stopped"
+        fire("netRemote.play.control", "0")
     }
 
-    func next() async {
-        _ = await client.set(radioIP, node: "netRemote.play.control", value: "3")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+    func next() {
+        trackName = ""; artist = ""; infoText = ""
+        fire("netRemote.play.control", "3")
     }
 
-    func prev() async {
-        _ = await client.set(radioIP, node: "netRemote.play.control", value: "4")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+    func prev() {
+        trackName = ""; artist = ""; infoText = ""
+        fire("netRemote.play.control", "4")
     }
 
-    func setMode(_ id: Int) async {
+    func setMode(_ id: Int) {
         Log("VM: Set mode \(id)")
-        _ = await client.set(radioIP, node: "netRemote.sys.mode", value: "\(id)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+        modeId = id
+        modeName = modes.first { $0.id == id }?.label ?? "Mode \(id)"
+        presets = []; presetsLoaded = false
+        browseItems = []; browseDepth = 0; browseTitle = ""
+        trackName = ""; artist = ""; infoText = ""; artworkURL = nil
+        fire("netRemote.sys.mode", "\(id)")
     }
 
-    func selectPreset(_ key: Int) async {
+    func selectPreset(_ key: Int) {
         Log("VM: Select preset \(key)")
-        _ = await client.set(radioIP, node: "netRemote.nav.action.selectPreset", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+        if let name = presets.first(where: { $0.key == key })?.name {
+            trackName = name; artist = ""; infoText = ""
+        }
+        fire("netRemote.nav.action.selectPreset", "\(key)")
     }
 
-    // MARK: Browse
+    // MARK: Browse — uses detached tasks to avoid SwiftUI .task lifecycle cancellation
 
-    func startBrowse() async {
+    @ObservationIgnored private var browseTask: Task<Void, Never>?
+
+    func startBrowse() {
         Log("VM: Start browse")
-        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        await fetchBrowseItems()
+        browseTask?.cancel()
+        browseTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseInto(_ key: Int) async {
+    func browseInto(_ key: Int) {
         Log("VM: Browse into \(key)")
-        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await fetchBrowseItems()
+        browseTask?.cancel()
+        browseTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseBack() async {
+    func browseBack() {
         Log("VM: Browse back")
-        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await fetchBrowseItems()
+        browseTask?.cancel()
+        browseTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseSelect(_ key: Int) async {
+    func browseSelect(_ key: Int) {
         Log("VM: Browse select \(key)")
-        _ = await client.set(radioIP, node: "netRemote.nav.action.selectItem", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+        if let name = browseItems.first(where: { $0.key == key })?.name {
+            trackName = name; artist = ""; infoText = ""
+        }
+        fire("netRemote.nav.action.selectItem", "\(key)")
     }
 
-    func browseSearch(_ term: String) async {
+    func browseSearch(_ term: String) {
         Log("VM: Search '\(term)'")
-        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await fetchBrowseItems()
+        browseTask?.cancel()
+        browseTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+            _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
+            await fetchBrowseItems()
+        }
     }
 
     private func fetchBrowseItems() async {
@@ -615,8 +638,11 @@ final class RadioViewModel {
         isBrowseLoading = true
         defer { isBrowseLoading = false }
 
-        for attempt in 0..<4 {
-            if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
+        // The radio needs a moment after nav enable/navigate before items are ready.
+        // Poll numItems a few times with short delays instead of long fixed sleeps.
+        for attempt in 0..<6 {
+            if Task.isCancelled { return }
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 300_000_000) }
 
             let info = await client.getMultiple(ip, nodes: [
                 "netRemote.nav.depth",
@@ -628,7 +654,7 @@ final class RadioViewModel {
 
             let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
             Log("VM: Browse fetch attempt \(attempt): \(numItems) items, depth=\(browseDepth), title=\(browseTitle)")
-            if numItems == 0 && attempt < 3 { continue }
+            if numItems == 0 && attempt < 5 { continue }
             guard numItems > 0 else { browseItems = []; return }
 
             let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
@@ -812,7 +838,7 @@ struct RadioMenuView: View {
             HStack {
                 Text("Standby").font(.caption).foregroundColor(.secondary)
                 Spacer()
-                Button("Power On") { Task { await vm.togglePower() } }
+                Button("Power On") { vm.togglePower() }
                     .buttonStyle(.borderedProminent).controlSize(.small)
             }
         }
@@ -826,7 +852,7 @@ struct RadioMenuView: View {
                 Text(vm.radioName).font(.caption).foregroundColor(.secondary)
                 Spacer()
                 statusBadge
-                Button(action: { Task { await vm.togglePower() } }) {
+                Button(action: { vm.togglePower() }) {
                     Image(systemName: "power").font(.system(size: 11))
                 }
                 .buttonStyle(.borderless).foregroundColor(.red).help("Standby")
@@ -881,7 +907,7 @@ struct RadioMenuView: View {
                     if editing {
                         vm.isDraggingSeek = true
                     } else {
-                        Task { await vm.seekTo(vm.position) }
+                        vm.seekTo(vm.position)
                     }
                 }
             Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
@@ -908,20 +934,20 @@ struct RadioMenuView: View {
     private var controlsView: some View {
         HStack(spacing: 20) {
             Spacer()
-            Button(action: { Task { await vm.prev() } }) {
+            Button(action: { vm.prev() }) {
                 Image(systemName: "backward.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Previous")
 
-            Button(action: { Task { await vm.playPause() } }) {
+            Button(action: { vm.playPause() }) {
                 Image(systemName: vm.playStatus == "playing" ? "pause.fill" : "play.fill")
                     .font(.system(size: 20))
             }.buttonStyle(.borderless).help(vm.playStatus == "playing" ? "Pause" : "Play")
 
-            Button(action: { Task { await vm.stop() } }) {
+            Button(action: { vm.stop() }) {
                 Image(systemName: "stop.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Stop")
 
-            Button(action: { Task { await vm.next() } }) {
+            Button(action: { vm.next() }) {
                 Image(systemName: "forward.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Next")
             Spacer()
@@ -933,7 +959,7 @@ struct RadioMenuView: View {
 
     private var volumeView: some View {
         HStack(spacing: 8) {
-            Button(action: { Task { await vm.toggleMute() } }) {
+            Button(action: { vm.toggleMute() }) {
                 Image(systemName: vm.muted ? "speaker.slash.fill" : volumeIcon)
                     .font(.system(size: 12))
                     .frame(width: 16)
@@ -947,10 +973,8 @@ struct RadioMenuView: View {
                     if editing {
                         vm.isDraggingVolume = true
                     } else {
-                        Task {
-                            await vm.setVolume(Int(vm.volume))
-                            vm.isDraggingVolume = false
-                        }
+                        vm.setVolume(Int(vm.volume))
+                        vm.isDraggingVolume = false
                     }
                 }
 
@@ -976,7 +1000,7 @@ struct RadioMenuView: View {
                 Text("Mode").font(.caption).foregroundColor(.secondary)
                 Picker("", selection: Binding(
                     get: { vm.modeId },
-                    set: { id in Task { await vm.setMode(id) } }
+                    set: { id in vm.setMode(id) }
                 )) {
                     ForEach(vm.modes, id: \.id) { mode in
                         Text(mode.label).tag(mode.id)
@@ -990,7 +1014,7 @@ struct RadioMenuView: View {
                 Text("EQ").font(.caption).foregroundColor(.secondary)
                 Picker("", selection: Binding(
                     get: { vm.eqPresetId },
-                    set: { id in Task { await vm.setEqPreset(id) } }
+                    set: { id in vm.setEqPreset(id) }
                 )) {
                     ForEach(vm.eqPresets, id: \.id) { eq in
                         Text(eq.label).tag(eq.id)
@@ -1045,7 +1069,7 @@ struct RadioMenuView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.presets, id: \.key) { preset in
                             PresetRow(number: preset.key + 1, name: preset.name) {
-                                Task { await vm.selectPreset(preset.key) }
+                                vm.selectPreset(preset.key)
                             }
                         }
                     }
@@ -1064,12 +1088,12 @@ struct RadioMenuView: View {
                     .font(.system(size: 11))
                     .onSubmit {
                         guard !searchText.isEmpty else { return }
-                        Task { await vm.browseSearch(searchText) }
+                        vm.browseSearch(searchText)
                     }
                 if !searchText.isEmpty {
                     Button(action: {
                         searchText = ""
-                        Task { await vm.startBrowse() }
+                        vm.startBrowse()
                     }) {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundColor(.secondary)
                     }
@@ -1079,7 +1103,7 @@ struct RadioMenuView: View {
 
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
-                    Button(action: { Task { await vm.browseBack() } }) {
+                    Button(action: { vm.browseBack() }) {
                         HStack(spacing: 2) {
                             Image(systemName: "chevron.left").font(.system(size: 10))
                             Text("Back").font(.system(size: 11))
@@ -1106,10 +1130,8 @@ struct RadioMenuView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.browseItems, id: \.key) { item in
                             BrowseRow(name: item.name, isFolder: item.isFolder) {
-                                Task {
-                                    if item.isFolder { await vm.browseInto(item.key) }
-                                    else { await vm.browseSelect(item.key) }
-                                }
+                                if item.isFolder { vm.browseInto(item.key) }
+                                else { vm.browseSelect(item.key) }
                             }
                         }
                     }
@@ -1117,9 +1139,14 @@ struct RadioMenuView: View {
                 .frame(maxHeight: 200)
             }
         }
-        .task(id: contentTab) {
+        .onChange(of: contentTab) {
             if contentTab == .browse && vm.browseItems.isEmpty {
-                await vm.startBrowse()
+                vm.startBrowse()
+            }
+        }
+        .onAppear {
+            if contentTab == .browse && vm.browseItems.isEmpty {
+                vm.startBrowse()
             }
         }
     }

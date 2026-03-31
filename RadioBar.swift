@@ -5,6 +5,17 @@
 import SwiftUI
 import Foundation
 
+// MARK: - Debug Logging
+
+let debugMode = CommandLine.arguments.contains("--debug")
+
+func Log(_ msg: String) {
+    guard debugMode else { return }
+    let c = Calendar.current, d = Date()
+    let ts = String(format: "%02d:%02d:%02d", c.component(.hour, from: d), c.component(.minute, from: d), c.component(.second, from: d))
+    fputs("[\(ts)] \(msg)\n", stderr)
+}
+
 // MARK: - XML Parsing
 
 /// Parses a GET response: <fsapiResponse><status>X</status><value><TYPE>V</TYPE></value></fsapiResponse>
@@ -144,34 +155,36 @@ actor FSAPIClient {
         self.session = URLSession(configuration: cfg)
     }
 
-    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
-        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)") else {
-            return ("FS_REQUEST_FAILED", nil)
-        }
+    private func fetch(_ url: URL) async -> Data? {
+        let start = Date()
+        let label = url.path + "?" + (url.query ?? "")
         do {
             let (data, _) = try await session.data(from: url)
-            return FSAPIGetParser.parse(data)
-        } catch { return ("FS_REQUEST_FAILED", nil) }
+            Log("FSAPI: \(label) -> \(data.count)B (\(Int(Date().timeIntervalSince(start) * 1000))ms)")
+            return data.isEmpty ? nil : data
+        } catch {
+            Log("FSAPI: \(label) -> error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
+        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)"),
+              let data = await fetch(url) else { return ("FS_REQUEST_FAILED", nil) }
+        return FSAPIGetParser.parse(data)
     }
 
     func set(_ ip: String, node: String, value: String) async -> String {
-        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(value)") else {
-            return "FS_REQUEST_FAILED"
-        }
-        do {
-            let (data, _) = try await session.data(from: url)
-            return FSAPIGetParser.parse(data).status
-        } catch { return "FS_REQUEST_FAILED" }
+        let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(v)"),
+              let data = await fetch(url) else { return "FS_REQUEST_FAILED" }
+        return FSAPIGetParser.parse(data).status
     }
 
     func list(_ ip: String, node: String, maxItems: Int = 100) async -> (status: String, items: [FSAPIListParser.Item]) {
-        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)") else {
-            return ("FS_REQUEST_FAILED", [])
-        }
-        do {
-            let (data, _) = try await session.data(from: url)
-            return FSAPIListParser.parse(data)
-        } catch { return ("FS_REQUEST_FAILED", []) }
+        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)"),
+              let data = await fetch(url) else { return ("FS_REQUEST_FAILED", []) }
+        return FSAPIListParser.parse(data)
     }
 
     /// GET_MULTIPLE, chunked to 5 nodes per request (radio rejects long URLs)
@@ -180,11 +193,12 @@ actor FSAPIClient {
         for i in stride(from: 0, to: nodes.count, by: 5) {
             let chunk = Array(nodes[i..<min(i + 5, nodes.count)])
             let q = chunk.map { "node=\($0)" }.joined(separator: "&")
-            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)") else { continue }
-            do {
-                let (data, _) = try await session.data(from: url)
-                result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
-            } catch { continue }
+            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)"),
+                  let data = await fetch(url) else {
+                if result.isEmpty { return [:] }
+                break
+            }
+            result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
         }
         return result
     }
@@ -316,6 +330,7 @@ final class RadioViewModel: ObservableObject {
         self.radioIP = ip
         self.radioPin = pin
         self.client = FSAPIClient(pin: pin)
+        Log("APP: Init (ip=\(ip))")
         startPolling()
     }
 
@@ -354,10 +369,12 @@ final class RadioViewModel: ObservableObject {
         ])
 
         guard !vals.isEmpty else {
+            if isConnected { Log("VM: Lost connection to \(ip)") }
             isConnected = false
             connectionError = "Cannot reach radio at \(ip)"
             return
         }
+        if !isConnected { Log("VM: Connected to \(ip)") }
         isConnected = true
         connectionError = nil
 
@@ -370,7 +387,9 @@ final class RadioViewModel: ObservableObject {
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
         playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
-        trackName = vals["netRemote.play.info.name"] ?? ""
+        let newTrack = vals["netRemote.play.info.name"] ?? ""
+        if newTrack != trackName { Log("VM: Now playing: \(newTrack)") }
+        trackName = newTrack
         artist = vals["netRemote.play.info.artist"] ?? ""
         infoText = vals["netRemote.play.info.text"] ?? ""
         if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
@@ -385,7 +404,10 @@ final class RadioViewModel: ObservableObject {
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
         modeId = newModeId
-        if modeChanged { browseItems = []; browseDepth = 0; browseTitle = "" }
+        if modeChanged {
+            Log("VM: Mode changed to \(newModeId)")
+            browseItems = []; browseDepth = 0; browseTitle = ""
+        }
 
         // Fetch modes list once
         if modes.isEmpty {
@@ -1145,6 +1167,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !CommandLine.arguments.contains("--dock") {
             NSApp.setActivationPolicy(.accessory)
         }
+        Log("APP: Launched")
     }
 }
 

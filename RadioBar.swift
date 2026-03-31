@@ -1,39 +1,25 @@
 // RadioBar.swift — Menubar app for controlling a Roberts Revival iStream 3L via FSAPI
-// Build & run: ./bin/radiobar-gui [--dock] [--debug]
+// Build & run: ./bin/radiobar-gui
+// Or manually: swiftc -parse-as-library RadioBar.swift -o RadioBar && ./RadioBar
 
 import SwiftUI
 import Foundation
-import Observation
-
-// MARK: - Debug Logging
-
-let debugMode = CommandLine.arguments.contains("--debug")
-
-/// Logs to stderr when --debug is passed. No-op otherwise.
-func Log(_ msg: String) {
-    guard debugMode else { return }
-    let c = Calendar.current, d = Date()
-    let ts = String(format: "%02d:%02d:%02d", c.component(.hour, from: d), c.component(.minute, from: d), c.component(.second, from: d))
-    fputs("[\(ts)] \(msg)\n", stderr)
-}
 
 // MARK: - XML Parsing
 
-/// Parses a GET or CREATE_SESSION response.
-/// Extracts status, value (from type-wrapper inside <value>), and sessionId.
+/// Parses a GET response: <fsapiResponse><status>X</status><value><TYPE>V</TYPE></value></fsapiResponse>
 final class FSAPIGetParser: NSObject, XMLParserDelegate {
     private(set) var status = ""
     private(set) var value: String?
-    private(set) var sessionId: String?
     private var path: [String] = []
     private var text = ""
 
-    static func parse(_ data: Data) -> FSAPIGetParser {
+    static func parse(_ data: Data) -> (status: String, value: String?) {
         let handler = FSAPIGetParser()
         let parser = XMLParser(data: data)
         parser.delegate = handler
         parser.parse()
-        return handler
+        return (handler.status, handler.value)
     }
 
     func parser(_ parser: XMLParser, didStartElement name: String,
@@ -52,11 +38,10 @@ final class FSAPIGetParser: NSObject, XMLParserDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if name == "status" && parent == "fsapiResponse" { status = t }
         else if parent == "value" { value = t }
-        else if name == "sessionId" && parent == "fsapiResponse" { sessionId = t }
     }
 }
 
-/// Parses LIST_GET_NEXT: items with key attribute and named fields.
+/// Parses LIST_GET_NEXT: items with key attribute and named fields
 final class FSAPIListParser: NSObject, XMLParserDelegate {
     struct Item { let key: Int; var fields: [String: String] }
 
@@ -68,12 +53,12 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
     private var itemFields: [String: String] = [:]
     private var fieldName: String?
 
-    static func parse(_ data: Data) -> FSAPIListParser {
+    static func parse(_ data: Data) -> (status: String, items: [Item]) {
         let handler = FSAPIListParser()
         let parser = XMLParser(data: data)
         parser.delegate = handler
         parser.parse()
-        return handler
+        return (handler.status, handler.items)
     }
 
     func parser(_ parser: XMLParser, didStartElement name: String,
@@ -102,7 +87,7 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
     }
 }
 
-/// Parses GET_MULTIPLE: multiple <fsapiResponse> blocks inside <fsapiGetMultipleResponse>.
+/// Parses GET_MULTIPLE: multiple <fsapiResponse> blocks inside <fsapiGetMultipleResponse>
 final class FSAPIMultiParser: NSObject, XMLParserDelegate {
     private(set) var values: [String: String] = [:]
     private var path: [String] = []
@@ -147,12 +132,8 @@ final class FSAPIMultiParser: NSObject, XMLParserDelegate {
 
 // MARK: - FSAPI Client
 
-/// Simple pin-based FSAPI client. Each request includes pin= directly — no session
-/// management, no retries. This avoids the cascading failure mode where a cancelled
-/// request (e.g. from SwiftUI tearing down a .task) invalidates the session for ALL
-/// subsequent requests.
 actor FSAPIClient {
-    let pin: String
+    private let pin: String
     private let session: URLSession
 
     init(pin: String = "1234") {
@@ -163,55 +144,47 @@ actor FSAPIClient {
         self.session = URLSession(configuration: cfg)
     }
 
-    func invalidateSession() { /* no-op, kept for API compat */ }
-
-    private func fetch(_ url: URL) async -> Data? {
-        let start = Date()
-        let path = url.path + "?" + (url.query ?? "")
+    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
+        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)") else {
+            return ("FS_REQUEST_FAILED", nil)
+        }
         do {
             let (data, _) = try await session.data(from: url)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            Log("FSAPI: \(path) -> \(data.count)B (\(ms)ms)")
-            return data.isEmpty ? nil : data
-        } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            Log("FSAPI: \(path) -> error (\(ms)ms): \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    func get(_ ip: String, node: String) async -> (status: String, value: String?) {
-        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)"),
-              let data = await fetch(url) else { return ("FS_REQUEST_FAILED", nil) }
-        let r = FSAPIGetParser.parse(data)
-        return (r.status, r.value)
+            return FSAPIGetParser.parse(data)
+        } catch { return ("FS_REQUEST_FAILED", nil) }
     }
 
     func set(_ ip: String, node: String, value: String) async -> String {
-        let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
-        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(v)"),
-              let data = await fetch(url) else { return "FS_REQUEST_FAILED" }
-        return FSAPIGetParser.parse(data).status
+        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(value)") else {
+            return "FS_REQUEST_FAILED"
+        }
+        do {
+            let (data, _) = try await session.data(from: url)
+            return FSAPIGetParser.parse(data).status
+        } catch { return "FS_REQUEST_FAILED" }
     }
 
-    func list(_ ip: String, node: String, maxItems: Int = 100) async -> FSAPIListParser {
-        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)"),
-              let data = await fetch(url) else { return FSAPIListParser() }
-        return FSAPIListParser.parse(data)
+    func list(_ ip: String, node: String, maxItems: Int = 100) async -> (status: String, items: [FSAPIListParser.Item]) {
+        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)") else {
+            return ("FS_REQUEST_FAILED", [])
+        }
+        do {
+            let (data, _) = try await session.data(from: url)
+            return FSAPIListParser.parse(data)
+        } catch { return ("FS_REQUEST_FAILED", []) }
     }
 
-    /// GET_MULTIPLE, chunked to 5 nodes per request. Bails early if the radio is unreachable.
+    /// GET_MULTIPLE, chunked to 5 nodes per request (radio rejects long URLs)
     func getMultiple(_ ip: String, nodes: [String]) async -> [String: String] {
         var result: [String: String] = [:]
         for i in stride(from: 0, to: nodes.count, by: 5) {
             let chunk = Array(nodes[i..<min(i + 5, nodes.count)])
             let q = chunk.map { "node=\($0)" }.joined(separator: "&")
-            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)"),
-                  let data = await fetch(url) else {
-                if result.isEmpty { return [:] }
-                break
-            }
-            result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
+            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)") else { continue }
+            do {
+                let (data, _) = try await session.data(from: url)
+                result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
+            } catch { continue }
         }
         return result
     }
@@ -221,14 +194,10 @@ actor FSAPIClient {
 
 /// Discovers a Frontier Silicon radio on the local network via SSDP multicast.
 func discoverRadio(timeout: TimeInterval = 3) async -> String? {
-    Log("SSDP: Starting discovery (timeout \(timeout)s)")
-    return await withCheckedContinuation { continuation in
+    await withCheckedContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
             let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-            guard sock >= 0 else {
-                Log("SSDP: Failed to create socket")
-                continuation.resume(returning: nil); return
-            }
+            guard sock >= 0 else { continuation.resume(returning: nil); return }
             defer { close(sock) }
 
             var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
@@ -250,10 +219,7 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
                     }
                 }
             }
-            guard sent > 0 else {
-                Log("SSDP: sendto failed")
-                continuation.resume(returning: nil); return
-            }
+            guard sent > 0 else { continuation.resume(returning: nil); return }
 
             var buffer = [UInt8](repeating: 0, count: 4096)
             var sender = sockaddr_in()
@@ -266,111 +232,90 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
             }
 
             guard n > 0, let response = String(bytes: buffer[0..<n], encoding: .utf8) else {
-                Log("SSDP: No response received")
                 continuation.resume(returning: nil); return
             }
 
-            Log("SSDP: Got response (\(n) bytes)")
+            // Extract IP from LOCATION header
             for line in response.components(separatedBy: "\r\n") {
                 if line.uppercased().hasPrefix("LOCATION:") {
                     let urlStr = String(line.dropFirst("LOCATION:".count)).trimmingCharacters(in: .whitespaces)
                     if let url = URL(string: urlStr), let host = url.host {
-                        Log("SSDP: Found radio at \(host)")
                         continuation.resume(returning: host); return
                     }
                 }
             }
 
+            // Fallback: sender IP
             var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &sender.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
-            let fallbackIP = String(cString: ipBuf)
-            Log("SSDP: Using sender IP as fallback: \(fallbackIP)")
-            continuation.resume(returning: fallbackIP)
+            continuation.resume(returning: String(cString: ipBuf))
         }
     }
 }
 
 // MARK: - View Model
 
-/// Uses @Observable for per-property SwiftUI tracking: when `position` changes, only the
-/// seek bar re-renders — not the entire view tree. This is critical for responsive UI since
-/// position changes every poll cycle during playback.
-@Observable
 @MainActor
-final class RadioViewModel {
+final class RadioViewModel: ObservableObject {
     // Connection
-    var radioIP: String = "" {
-        didSet {
-            UserDefaults.standard.set(radioIP, forKey: "radioBarIP")
-            Task { await client.invalidateSession() }
-        }
-    }
-    var radioPin: String = "" { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
-    var isConnected = false
-    var isDiscovering = false
-    var connectionError: String?
+    @Published var radioIP: String { didSet { UserDefaults.standard.set(radioIP, forKey: "radioBarIP") } }
+    @Published var radioPin: String { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
+    @Published var isConnected = false
+    @Published var isDiscovering = false
+    @Published var connectionError: String?
 
     // State
-    var power = false
-    var radioName = ""
-    var modeName = ""
-    var modeId = 0
-    var volume: Double = 0
-    var maxVolume: Double = 31
-    var muted = false
+    @Published var power = false
+    @Published var radioName = ""
+    @Published var modeName = ""
+    @Published var modeId = 0
+    @Published var volume: Double = 0
+    @Published var maxVolume: Double = 31
+    @Published var muted = false
 
     // Now playing
-    var playStatus = "stopped"
-    var trackName = ""
-    var artist = ""
-    var infoText = ""
-    var artworkURL: URL?
-    var position = 0
-    var duration = 0
+    @Published var playStatus = "stopped"
+    @Published var trackName = ""
+    @Published var artist = ""
+    @Published var infoText = ""
+    @Published var artworkURL: URL?
+    @Published var position = 0
+    @Published var duration = 0
 
     // Lists
-    var modes: [(id: Int, label: String)] = []
-    var presets: [(key: Int, name: String)] = []
+    @Published var modes: [(id: Int, label: String)] = []
+    @Published var presets: [(key: Int, name: String)] = []
 
     // EQ
-    var eqPresets: [(id: Int, label: String)] = []
-    var eqPresetId = 0
-
-    // Browse
-    var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
-    var browseTitle = ""
-    var browseDepth = 0
-    var isBrowseLoading = false
+    @Published var eqPresets: [(id: Int, label: String)] = []
+    @Published var eqPresetId = 0
 
     // Alarms
-    var alarms: [(key: Int, fields: [String: String])] = []
+    @Published var alarms: [(key: Int, fields: [String: String])] = []
 
     // Spotify
-    var spotifyUser = ""
-    var spotifyBitRate = ""
+    @Published var spotifyUser = ""
+    @Published var spotifyBitRate = ""
     var isSpotifyMode: Bool { modeName.lowercased().contains("spotify") }
 
-    // Internal — excluded from observation so changes don't trigger any re-renders
-    @ObservationIgnored var isDraggingVolume = false
-    @ObservationIgnored var isDraggingSeek = false
-    @ObservationIgnored private var isPolling = false
-    @ObservationIgnored private var presetsLoaded = false
-    @ObservationIgnored private var pollTimer: Timer?
-    @ObservationIgnored private(set) var client: FSAPIClient
+    // Browse
+    @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
+    @Published var browseTitle = ""
+    @Published var browseDepth = 0
+    @Published var isBrowseLoading = false
 
-    /// Only writes (and triggers observation notification) when the value actually differs.
-    private func set<T: Equatable>(_ kp: ReferenceWritableKeyPath<RadioViewModel, T>, _ v: T) {
-        if self[keyPath: kp] != v { self[keyPath: kp] = v }
-    }
+    // Internal
+    var isDraggingVolume = false
+    private var isPolling = false
+    private var pollTimer: Timer?
+    private var client: FSAPIClient
 
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
         let pin = UserDefaults.standard.string(forKey: "radioBarPIN") ?? "1234"
-        // Use _radioIP/_radioPin to set backing storage without triggering didSet
-        _radioIP = ip
-        _radioPin = pin
+        self.radioIP = ip
+        self.radioPin = pin
         self.client = FSAPIClient(pin: pin)
-        Log("APP: RadioViewModel init (ip=\(ip))")
         startPolling()
     }
 
@@ -409,77 +354,58 @@ final class RadioViewModel {
         ])
 
         guard !vals.isEmpty else {
-            if isConnected { Log("VM: Lost connection to \(ip)") }
-            set(\.isConnected, false)
-            set(\.connectionError, "Cannot reach radio at \(ip)")
+            isConnected = false
+            connectionError = "Cannot reach radio at \(ip)"
             return
         }
+        isConnected = true
+        connectionError = nil
 
-        let wasConnected = isConnected
-        set(\.isConnected, true)
-        set(\.connectionError, nil)
-        if !wasConnected { Log("VM: Connected to \(ip)") }
-
-        // Update all properties with equality checks to avoid unnecessary SwiftUI re-renders.
-        // Without these guards, ~20 @Published updates per poll cause the view tree to re-render
-        // even when nothing changed, blocking the main actor for seconds on complex views.
-        set(\.power, vals["netRemote.sys.power"] == "1")
-        set(\.radioName, vals["netRemote.sys.info.friendlyName"] ?? "Radio")
-        if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { set(\.maxVolume, v) }
-        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { set(\.volume, v) }
-        set(\.muted, vals["netRemote.sys.audio.mute"] == "1")
-        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { set(\.eqPresetId, v) }
+        power = vals["netRemote.sys.power"] == "1"
+        radioName = vals["netRemote.sys.info.friendlyName"] ?? "Radio"
+        if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
+        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { volume = v }
+        muted = vals["netRemote.sys.audio.mute"] == "1"
+        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { eqPresetId = v }
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
-        set(\.playStatus, statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped")
+        playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
+        trackName = vals["netRemote.play.info.name"] ?? ""
+        artist = vals["netRemote.play.info.artist"] ?? ""
+        infoText = vals["netRemote.play.info.text"] ?? ""
+        if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
+        else { artworkURL = nil }
+        if let d = vals["netRemote.play.info.duration"], let v = Int(d) { duration = v }
+        if let p = vals["netRemote.play.position"], let v = Int(p) { position = v }
 
-        let newTrack = vals["netRemote.play.info.name"] ?? ""
-        if newTrack != trackName { Log("VM: Now playing: \(newTrack)") }
-        set(\.trackName, newTrack)
-        set(\.artist, vals["netRemote.play.info.artist"] ?? "")
-        set(\.infoText, vals["netRemote.play.info.text"] ?? "")
-        let newArt: URL? = vals["netRemote.play.info.graphicUri"].flatMap { $0.isEmpty ? nil : URL(string: $0) }
-        set(\.artworkURL, newArt)
-        if let d = vals["netRemote.play.info.duration"], let v = Int(d) { set(\.duration, v) }
-        if !isDraggingSeek, let p = vals["netRemote.play.position"], let v = Int(p) { set(\.position, v) }
-
-        // Spotify
-        set(\.spotifyUser, vals["netRemote.spotify.username"] ?? "")
+        spotifyUser = vals["netRemote.spotify.username"] ?? ""
         let brMap = ["0": "Low", "1": "Normal", "2": "High", "3": "Very High"]
-        set(\.spotifyBitRate, brMap[vals["netRemote.spotify.bitRate"] ?? ""] ?? "")
+        spotifyBitRate = brMap[vals["netRemote.spotify.bitRate"] ?? ""] ?? ""
 
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
-        set(\.modeId, newModeId)
-        if modeChanged {
-            Log("VM: Mode changed to \(newModeId)")
-            browseItems = []; browseDepth = 0; browseTitle = ""
-            presetsLoaded = false
-        }
+        modeId = newModeId
+        if modeChanged { browseItems = []; browseDepth = 0; browseTitle = "" }
 
-        // Fetch modes + EQ presets once
+        // Fetch modes list once
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
             if r.status == "FS_OK" {
                 modes = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "Mode \($0.key)") }
-                Log("VM: Loaded \(modes.count) modes")
             }
         }
         if eqPresets.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.eqPresets")
             if r.status == "FS_OK" {
                 eqPresets = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "EQ \($0.key)") }
-                Log("VM: Loaded \(eqPresets.count) EQ presets")
             }
         }
-        set(\.modeName, modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)")
+        modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
 
-        // Fetch presets once per mode (not every poll)
-        if power && (modeChanged || !presetsLoaded) {
-            presetsLoaded = true
+        // Fetch presets on mode change
+        if power && (modeChanged || presets.isEmpty) {
             let r = await client.list(ip, node: "netRemote.nav.presets")
-            let newPresets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
-            if presets.count != newPresets.count { presets = newPresets }
+            presets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
         }
     }
 
@@ -488,149 +414,102 @@ final class RadioViewModel {
         client = FSAPIClient(pin: newPin)
     }
 
-    func reconnect() async {
-        Log("VM: Reconnecting")
-        await client.invalidateSession()
-        isConnected = false
-        connectionError = nil
-        modes = []; eqPresets = []; presets = []; presetsLoaded = false
+    // MARK: Actions
+
+    func togglePower() async {
+        _ = await client.set(radioIP, node: "netRemote.sys.power", value: power ? "0" : "1")
+        try? await Task.sleep(nanoseconds: 500_000_000)
         await poll()
     }
 
-    // MARK: Actions — fire-and-forget with optimistic UI updates
-    // All actions update local state immediately, then send the SET in the background.
-    // The regular 4-second poll syncs actual radio state. No sleeps, no blocking.
-
-    private func fire(_ node: String, _ value: String) {
-        let ip = radioIP
-        Task { _ = await client.set(ip, node: node, value: value) }
+    func setVolume(_ vol: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.sys.audio.volume", value: "\(max(0, min(Int(maxVolume), vol)))")
     }
 
-    func togglePower() {
-        Log("VM: Toggle power (currently \(power ? "on" : "off"))")
-        power.toggle()
-        fire("netRemote.sys.power", power ? "1" : "0")
-    }
-
-    func setVolume(_ vol: Int) {
-        fire("netRemote.sys.audio.volume", "\(max(0, min(Int(maxVolume), vol)))")
-    }
-
-    func toggleMute() {
+    func toggleMute() async {
+        _ = await client.set(radioIP, node: "netRemote.sys.audio.mute", value: muted ? "0" : "1")
         muted.toggle()
-        fire("netRemote.sys.audio.mute", muted ? "1" : "0")
-    }
-
-    func setEqPreset(_ id: Int) {
-        Log("VM: Set EQ preset \(id)")
-        eqPresetId = id
-        fire("netRemote.sys.audio.eqPreset", "\(id)")
     }
 
     func seekTo(_ ms: Int) {
+        let ip = radioIP
         let clamped = max(0, min(ms, duration))
-        Log("VM: Seek to \(clamped)ms")
-        position = clamped
-        fire("netRemote.play.position", "\(clamped)")
-        // Release the drag lock after a short delay so the poll doesn't snap back
-        // before the radio has processed the seek
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            isDraggingSeek = false
-        }
+        Task { _ = await client.set(ip, node: "netRemote.play.position", value: "\(clamped)") }
     }
 
-    func playPause() {
-        let newStatus = playStatus == "playing" ? "paused" : "playing"
-        Log("VM: \(newStatus)")
-        playStatus = newStatus
-        fire("netRemote.play.control", playStatus == "playing" ? "1" : "2")
+    func setEqPreset(_ id: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.sys.audio.eqPreset", value: "\(id)")
+        eqPresetId = id
     }
 
-    func stop() {
-        playStatus = "stopped"
-        fire("netRemote.play.control", "0")
+    func playPause() async {
+        _ = await client.set(radioIP, node: "netRemote.play.control", value: playStatus == "playing" ? "2" : "1")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await poll()
     }
 
-    func next() {
-        trackName = ""; artist = ""; infoText = ""
-        fire("netRemote.play.control", "3")
+    func stop() async {
+        _ = await client.set(radioIP, node: "netRemote.play.control", value: "0")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await poll()
     }
 
-    func prev() {
-        trackName = ""; artist = ""; infoText = ""
-        fire("netRemote.play.control", "4")
+    func next() async {
+        _ = await client.set(radioIP, node: "netRemote.play.control", value: "3")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await poll()
     }
 
-    func setMode(_ id: Int) {
-        Log("VM: Set mode \(id)")
-        modeId = id
-        modeName = modes.first { $0.id == id }?.label ?? "Mode \(id)"
-        presets = []; presetsLoaded = false
-        browseItems = []; browseDepth = 0; browseTitle = ""
-        trackName = ""; artist = ""; infoText = ""; artworkURL = nil
-        fire("netRemote.sys.mode", "\(id)")
+    func prev() async {
+        _ = await client.set(radioIP, node: "netRemote.play.control", value: "4")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await poll()
     }
 
-    func selectPreset(_ key: Int) {
-        Log("VM: Select preset \(key)")
-        if let name = presets.first(where: { $0.key == key })?.name {
-            trackName = name; artist = ""; infoText = ""
-        }
-        fire("netRemote.nav.action.selectPreset", "\(key)")
+    func setMode(_ id: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.sys.mode", value: "\(id)")
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await poll()
     }
 
-    // MARK: Browse — uses detached tasks to avoid SwiftUI .task lifecycle cancellation
-
-    @ObservationIgnored private var browseTask: Task<Void, Never>?
-
-    func startBrowse() {
-        Log("VM: Start browse")
-        browseTask?.cancel()
-        browseTask = Task { [weak self] in
-            guard let self else { return }
-            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-            await fetchBrowseItems()
-        }
+    func selectPreset(_ key: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.selectPreset", value: "\(key)")
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await poll()
     }
 
-    func browseInto(_ key: Int) {
-        Log("VM: Browse into \(key)")
-        browseTask?.cancel()
-        browseTask = Task { [weak self] in
-            guard let self else { return }
-            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
-            await fetchBrowseItems()
-        }
+    // MARK: Browse
+
+    func startBrowse() async {
+        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        await fetchBrowseItems()
     }
 
-    func browseBack() {
-        Log("VM: Browse back")
-        browseTask?.cancel()
-        browseTask = Task { [weak self] in
-            guard let self else { return }
-            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
-            await fetchBrowseItems()
-        }
+    func browseInto(_ key: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await fetchBrowseItems()
     }
 
-    func browseSelect(_ key: Int) {
-        Log("VM: Browse select \(key)")
-        if let name = browseItems.first(where: { $0.key == key })?.name {
-            trackName = name; artist = ""; infoText = ""
-        }
-        fire("netRemote.nav.action.selectItem", "\(key)")
+    func browseBack() async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        await fetchBrowseItems()
     }
 
-    func browseSearch(_ term: String) {
-        Log("VM: Search '\(term)'")
-        browseTask?.cancel()
-        browseTask = Task { [weak self] in
-            guard let self else { return }
-            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-            _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
-            await fetchBrowseItems()
-        }
+    func browseSearch(_ term: String) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await fetchBrowseItems()
+    }
+
+    func browseSelect(_ key: Int) async {
+        _ = await client.set(radioIP, node: "netRemote.nav.action.selectItem", value: "\(key)")
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await poll()
     }
 
     private func fetchBrowseItems() async {
@@ -638,11 +517,10 @@ final class RadioViewModel {
         isBrowseLoading = true
         defer { isBrowseLoading = false }
 
-        // The radio needs a moment after nav enable/navigate before items are ready.
-        // Poll numItems a few times with short delays instead of long fixed sleeps.
-        for attempt in 0..<6 {
-            if Task.isCancelled { return }
-            if attempt > 0 { try? await Task.sleep(nanoseconds: 300_000_000) }
+        // The radio's nav layer can take a moment to populate after enable/navigate.
+        // Retry a few times if numItems is 0 or the list fetch fails.
+        for attempt in 0..<4 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
 
             let info = await client.getMultiple(ip, nodes: [
                 "netRemote.nav.depth",
@@ -653,8 +531,7 @@ final class RadioViewModel {
             browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
             let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
-            Log("VM: Browse fetch attempt \(attempt): \(numItems) items, depth=\(browseDepth), title=\(browseTitle)")
-            if numItems == 0 && attempt < 5 { continue }
+            if numItems == 0 && attempt < 3 { continue }
             guard numItems > 0 else { browseItems = []; return }
 
             let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
@@ -664,25 +541,16 @@ final class RadioViewModel {
                      name: item.fields["name"] ?? "Item \(item.key)",
                      isFolder: item.fields["type"] == "0")
                 }
-                Log("VM: Browse loaded \(browseItems.count) items")
                 return
             }
         }
         browseItems = []
     }
 
-    // MARK: Alarms
-
     func fetchAlarms() async {
-        Log("VM: Fetching alarms")
         let r = await client.list(radioIP, node: "netRemote.sys.alarm.config")
-        if r.status == "FS_OK" {
-            alarms = r.items.map { (key: $0.key, fields: $0.fields) }
-            Log("VM: Loaded \(alarms.count) alarms")
-        }
+        if r.status == "FS_OK" { alarms = r.items.map { (key: $0.key, fields: $0.fields) } }
     }
-
-    // MARK: Discovery
 
     func discover() async {
         isDiscovering = true
@@ -762,7 +630,7 @@ struct BrowseRow: View {
 enum ContentTab: String, CaseIterable { case presets, browse }
 
 struct RadioMenuView: View {
-    @Bindable var vm: RadioViewModel
+    @ObservedObject var vm: RadioViewModel
     @State private var showSettings = false
     @State private var showAlarms = false
     @State private var ipField = ""
@@ -783,9 +651,9 @@ struct RadioMenuView: View {
                 controlsView
                 Divider().padding(.vertical, 4)
                 volumeView
-                if !vm.modes.isEmpty || !vm.eqPresets.isEmpty {
+                if !vm.modes.isEmpty {
                     Divider().padding(.vertical, 4)
-                    modeEqView
+                    modeView
                 }
                 if vm.isSpotifyMode && !vm.spotifyUser.isEmpty {
                     spotifyView
@@ -819,8 +687,6 @@ struct RadioMenuView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
             settingsFields
-            Button("Reconnect") { Task { await vm.reconnect() } }
-                .controlSize(.small)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -838,7 +704,7 @@ struct RadioMenuView: View {
             HStack {
                 Text("Standby").font(.caption).foregroundColor(.secondary)
                 Spacer()
-                Button("Power On") { vm.togglePower() }
+                Button("Power On") { Task { await vm.togglePower() } }
                     .buttonStyle(.borderedProminent).controlSize(.small)
             }
         }
@@ -848,16 +714,18 @@ struct RadioMenuView: View {
 
     private var nowPlayingView: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Header
             HStack {
                 Text(vm.radioName).font(.caption).foregroundColor(.secondary)
                 Spacer()
                 statusBadge
-                Button(action: { vm.togglePower() }) {
+                Button(action: { Task { await vm.togglePower() } }) {
                     Image(systemName: "power").font(.system(size: 11))
                 }
                 .buttonStyle(.borderless).foregroundColor(.red).help("Standby")
             }
 
+            // Track info
             HStack(alignment: .top, spacing: 10) {
                 if let url = vm.artworkURL {
                     AsyncImage(url: url) { phase in
@@ -881,38 +749,27 @@ struct RadioMenuView: View {
                 }
             }
 
-            // Seek bar — only for finite-length content (podcasts, Spotify, USB — not live radio)
-            // Note: seeking (SET play.position) may not work in all modes. The bar still serves
-            // as a visual progress indicator even when seeking isn't supported.
+            // Progress bar (clickable to seek for finite-length content)
             if vm.duration > 0 {
-                seekBarView
+                HStack(spacing: 4) {
+                    Text(fmtTime(vm.position)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.quaternary).frame(height: 3)
+                            Capsule().fill(Color.accentColor)
+                                .frame(width: geo.size.width * CGFloat(vm.position) / CGFloat(max(1, vm.duration)), height: 3)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { location in
+                            let fraction = max(0, min(1, location.x / geo.size.width))
+                            vm.seekTo(Int(fraction * Double(vm.duration)))
+                        }
+                    }.frame(height: 8) // slightly taller hit target than the visual 3px
+                    Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                }
+                .padding(.top, 2)
             }
         }
-    }
-
-    private var seekBarView: some View {
-        let safeMax = Double(max(1, vm.duration))
-        let safePos = min(Double(vm.position), safeMax)
-        return HStack(spacing: 4) {
-            Text(fmtTime(vm.position)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
-            Slider(
-                value: Binding(
-                    get: { safePos },
-                    set: { vm.position = Int($0) }
-                ),
-                in: 0...safeMax,
-                step: 1000
-            ) { EmptyView() }
-                onEditingChanged: { editing in
-                    if editing {
-                        vm.isDraggingSeek = true
-                    } else {
-                        vm.seekTo(vm.position)
-                    }
-                }
-            Text(fmtTime(vm.duration)).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
-        }
-        .padding(.top, 2)
     }
 
     private var statusBadge: some View {
@@ -934,20 +791,20 @@ struct RadioMenuView: View {
     private var controlsView: some View {
         HStack(spacing: 20) {
             Spacer()
-            Button(action: { vm.prev() }) {
+            Button(action: { Task { await vm.prev() } }) {
                 Image(systemName: "backward.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Previous")
 
-            Button(action: { vm.playPause() }) {
+            Button(action: { Task { await vm.playPause() } }) {
                 Image(systemName: vm.playStatus == "playing" ? "pause.fill" : "play.fill")
                     .font(.system(size: 20))
             }.buttonStyle(.borderless).help(vm.playStatus == "playing" ? "Pause" : "Play")
 
-            Button(action: { vm.stop() }) {
+            Button(action: { Task { await vm.stop() } }) {
                 Image(systemName: "stop.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Stop")
 
-            Button(action: { vm.next() }) {
+            Button(action: { Task { await vm.next() } }) {
                 Image(systemName: "forward.fill").font(.system(size: 14))
             }.buttonStyle(.borderless).help("Next")
             Spacer()
@@ -959,7 +816,7 @@ struct RadioMenuView: View {
 
     private var volumeView: some View {
         HStack(spacing: 8) {
-            Button(action: { vm.toggleMute() }) {
+            Button(action: { Task { await vm.toggleMute() } }) {
                 Image(systemName: vm.muted ? "speaker.slash.fill" : volumeIcon)
                     .font(.system(size: 12))
                     .frame(width: 16)
@@ -970,12 +827,8 @@ struct RadioMenuView: View {
 
             Slider(value: $vm.volume, in: 0...vm.maxVolume, step: 1) { EmptyView() }
                 onEditingChanged: { editing in
-                    if editing {
-                        vm.isDraggingVolume = true
-                    } else {
-                        vm.setVolume(Int(vm.volume))
-                        vm.isDraggingVolume = false
-                    }
+                    vm.isDraggingVolume = editing
+                    if !editing { Task { await vm.setVolume(Int(vm.volume)) } }
                 }
 
             Text("\(Int(vm.volume))")
@@ -992,29 +845,28 @@ struct RadioMenuView: View {
         return "speaker.wave.3.fill"
     }
 
-    // MARK: Mode & EQ
+    // MARK: Mode
 
-    private var modeEqView: some View {
+    private var modeView: some View {
         HStack(spacing: 8) {
-            if !vm.modes.isEmpty {
-                Text("Mode").font(.caption).foregroundColor(.secondary)
-                Picker("", selection: Binding(
-                    get: { vm.modeId },
-                    set: { id in vm.setMode(id) }
-                )) {
-                    ForEach(vm.modes, id: \.id) { mode in
-                        Text(mode.label).tag(mode.id)
-                    }
+            Text("Mode").font(.caption).foregroundColor(.secondary)
+            Picker("", selection: Binding(
+                get: { vm.modeId },
+                set: { id in Task { await vm.setMode(id) } }
+            )) {
+                ForEach(vm.modes, id: \.id) { mode in
+                    Text(mode.label).tag(mode.id)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
             }
+            .labelsHidden()
+            .pickerStyle(.menu)
+
             if !vm.eqPresets.isEmpty {
                 Spacer()
                 Text("EQ").font(.caption).foregroundColor(.secondary)
                 Picker("", selection: Binding(
                     get: { vm.eqPresetId },
-                    set: { id in vm.setEqPreset(id) }
+                    set: { id in Task { await vm.setEqPreset(id) } }
                 )) {
                     ForEach(vm.eqPresets, id: \.id) { eq in
                         Text(eq.label).tag(eq.id)
@@ -1069,7 +921,7 @@ struct RadioMenuView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.presets, id: \.key) { preset in
                             PresetRow(number: preset.key + 1, name: preset.name) {
-                                vm.selectPreset(preset.key)
+                                Task { await vm.selectPreset(preset.key) }
                             }
                         }
                     }
@@ -1081,6 +933,7 @@ struct RadioMenuView: View {
 
     private var browseContent: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // Search
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.secondary)
                 TextField("Search \(vm.modeName)...", text: $searchText)
@@ -1088,12 +941,12 @@ struct RadioMenuView: View {
                     .font(.system(size: 11))
                     .onSubmit {
                         guard !searchText.isEmpty else { return }
-                        vm.browseSearch(searchText)
+                        Task { await vm.browseSearch(searchText) }
                     }
                 if !searchText.isEmpty {
                     Button(action: {
                         searchText = ""
-                        vm.startBrowse()
+                        Task { await vm.startBrowse() }
                     }) {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundColor(.secondary)
                     }
@@ -1101,9 +954,10 @@ struct RadioMenuView: View {
                 }
             }
 
+            // Navigation bar
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
-                    Button(action: { vm.browseBack() }) {
+                    Button(action: { Task { await vm.browseBack() } }) {
                         HStack(spacing: 2) {
                             Image(systemName: "chevron.left").font(.system(size: 10))
                             Text("Back").font(.system(size: 11))
@@ -1118,6 +972,7 @@ struct RadioMenuView: View {
                 Spacer()
             }
 
+            // Items
             if vm.isBrowseLoading {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .padding(.vertical, 12)
@@ -1130,8 +985,10 @@ struct RadioMenuView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.browseItems, id: \.key) { item in
                             BrowseRow(name: item.name, isFolder: item.isFolder) {
-                                if item.isFolder { vm.browseInto(item.key) }
-                                else { vm.browseSelect(item.key) }
+                                Task {
+                                    if item.isFolder { await vm.browseInto(item.key) }
+                                    else { await vm.browseSelect(item.key) }
+                                }
                             }
                         }
                     }
@@ -1139,14 +996,9 @@ struct RadioMenuView: View {
                 .frame(maxHeight: 200)
             }
         }
-        .onChange(of: contentTab) {
+        .task(id: contentTab) {
             if contentTab == .browse && vm.browseItems.isEmpty {
-                vm.startBrowse()
-            }
-        }
-        .onAppear {
-            if contentTab == .browse && vm.browseItems.isEmpty {
-                vm.startBrowse()
+                await vm.startBrowse()
             }
         }
     }
@@ -1164,8 +1016,7 @@ struct RadioMenuView: View {
                     Text("Alarms").font(.caption)
                     Spacer()
                     Image(systemName: showAlarms ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 9)).foregroundColor(.secondary)
                 }
             }
             .buttonStyle(.borderless)
@@ -1173,8 +1024,7 @@ struct RadioMenuView: View {
             if showAlarms {
                 if vm.alarms.isEmpty {
                     Text("No alarms configured")
-                        .font(.caption).foregroundColor(.secondary)
-                        .padding(.vertical, 4)
+                        .font(.caption).foregroundColor(.secondary).padding(.vertical, 4)
                 } else {
                     VStack(spacing: 2) {
                         ForEach(vm.alarms, id: \.key) { alarm in
@@ -1189,30 +1039,35 @@ struct RadioMenuView: View {
     private func alarmRow(_ alarm: (key: Int, fields: [String: String])) -> some View {
         let f = alarm.fields
         let enabled = f["enable"] == "1"
-        let time = formatAlarmTime(f["time"] ?? f["timeHour"].flatMap { h in
-            f["timeMinute"].map { m in "\(h):\(m)" }
-        } ?? "")
+        let time = formatAlarmTime(f["time"] ?? "")
         let days = formatWeekdays(f["weekdays"])
         let vol = f["volume"]
-
         return HStack(spacing: 6) {
-            Circle()
-                .fill(enabled ? Color.green : Color.secondary.opacity(0.3))
-                .frame(width: 6, height: 6)
-            Text(time)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-            if let days = days {
-                Text(days).font(.system(size: 10)).foregroundColor(.secondary)
-            }
+            Circle().fill(enabled ? Color.green : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
+            Text(time).font(.system(size: 11, weight: .medium, design: .monospaced))
+            if let days = days { Text(days).font(.system(size: 10)).foregroundColor(.secondary) }
             Spacer()
             if let vol = vol {
                 Image(systemName: "speaker.wave.1.fill").font(.system(size: 8)).foregroundColor(.secondary)
                 Text(vol).font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
-        .padding(.vertical, 2)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 2).padding(.horizontal, 4)
         .opacity(enabled ? 1.0 : 0.5)
+    }
+
+    private func formatAlarmTime(_ raw: String) -> String {
+        if let secs = Int(raw) { return String(format: "%02d:%02d", secs / 3600, (secs % 3600) / 60) }
+        return raw.isEmpty ? "--:--" : raw
+    }
+
+    private func formatWeekdays(_ raw: String?) -> String? {
+        guard let raw = raw, let mask = Int(raw), mask > 0 else { return nil }
+        if mask == 127 { return "Every day" }
+        if mask == 31 { return "Weekdays" }
+        if mask == 96 { return "Weekends" }
+        let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        return (0..<7).filter { mask & (1 << $0) != 0 }.map { days[$0] }.joined(separator: " ")
     }
 
     // MARK: Settings
@@ -1254,11 +1109,7 @@ struct RadioMenuView: View {
             if showSettings && vm.isConnected {
                 VStack(alignment: .leading, spacing: 4) {
                     settingsFields
-                    HStack {
-                        Button("Reconnect") { Task { await vm.reconnect() } }.controlSize(.small)
-                        Spacer()
-                        Button("Done") { showSettings = false }.controlSize(.small)
-                    }
+                    Button("Done") { showSettings = false }.controlSize(.small)
                 }
             } else {
                 Button(action: { withAnimation { showSettings.toggle() } }) {
@@ -1285,24 +1136,6 @@ struct RadioMenuView: View {
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
-
-    private func formatAlarmTime(_ raw: String) -> String {
-        if let secs = Int(raw) {
-            let h = secs / 3600, m = (secs % 3600) / 60
-            return String(format: "%02d:%02d", h, m)
-        }
-        return raw.isEmpty ? "--:--" : raw
-    }
-
-    private func formatWeekdays(_ raw: String?) -> String? {
-        guard let raw = raw, let mask = Int(raw), mask > 0 else { return nil }
-        if mask == 127 { return "Every day" }
-        if mask == 31 { return "Weekdays" }
-        if mask == 96 { return "Weekends" }
-        let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-        let active = (0..<7).filter { mask & (1 << $0) != 0 }.map { days[$0] }
-        return active.joined(separator: " ")
-    }
 }
 
 // MARK: - App
@@ -1312,14 +1145,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !CommandLine.arguments.contains("--dock") {
             NSApp.setActivationPolicy(.accessory)
         }
-        Log("APP: Launched (dock=\(CommandLine.arguments.contains("--dock")), debug=true)")
     }
 }
 
 @main
 struct RadioBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @State private var vm = RadioViewModel()
+    @StateObject private var vm = RadioViewModel()
 
     var body: some Scene {
         MenuBarExtra {

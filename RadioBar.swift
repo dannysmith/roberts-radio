@@ -147,104 +147,56 @@ final class FSAPIMultiParser: NSObject, XMLParserDelegate {
 
 // MARK: - FSAPI Client
 
-/// Handles HTTP communication with the radio. Uses session-based auth with automatic
-/// retry — matches the behavior of the CLI tool (CREATE_SESSION + sid= on all requests).
+/// Simple pin-based FSAPI client. Each request includes pin= directly — no session
+/// management, no retries. This avoids the cascading failure mode where a cancelled
+/// request (e.g. from SwiftUI tearing down a .task) invalidates the session for ALL
+/// subsequent requests.
 actor FSAPIClient {
     let pin: String
-    private var sid: String?
     private let session: URLSession
 
     init(pin: String = "1234") {
         self.pin = pin
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 3
-        cfg.timeoutIntervalForResource = 6
+        cfg.timeoutIntervalForRequest = 5
+        cfg.timeoutIntervalForResource = 8
         self.session = URLSession(configuration: cfg)
     }
 
-    func invalidateSession() {
-        Log("FSAPI: Session invalidated")
-        sid = nil
-    }
+    func invalidateSession() { /* no-op, kept for API compat */ }
 
-    private func createSession(_ ip: String) async -> String? {
-        Log("FSAPI: Creating session on \(ip)")
-        guard let url = URL(string: "http://\(ip)/fsapi/CREATE_SESSION?pin=\(pin)") else { return nil }
+    private func fetch(_ url: URL) async -> Data? {
+        let start = Date()
+        let path = url.path + "?" + (url.query ?? "")
         do {
             let (data, _) = try await session.data(from: url)
-            let r = FSAPIGetParser.parse(data)
-            if r.status == "FS_OK", let newSid = r.sessionId {
-                Log("FSAPI: Session created: \(newSid)")
-                sid = newSid
-                return newSid
-            }
-            Log("FSAPI: Session creation failed: \(r.status)")
-            return nil
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            Log("FSAPI: \(path) -> \(data.count)B (\(ms)ms)")
+            return data.isEmpty ? nil : data
         } catch {
-            Log("FSAPI: Session creation error: \(error.localizedDescription)")
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            Log("FSAPI: \(path) -> error (\(ms)ms): \(error.localizedDescription)")
             return nil
         }
-    }
-
-    /// Core request method. Ensures a valid session, appends sid=, retries once on failure.
-    private func request(_ ip: String, path: String) async -> Data? {
-        for attempt in 0..<2 {
-            // Ensure we have a session
-            if sid == nil { _ = await createSession(ip) }
-            guard let currentSid = sid else {
-                Log("FSAPI: No session available (\(attempt))")
-                return nil
-            }
-
-            let urlStr = "http://\(ip)/fsapi/\(path)&sid=\(currentSid)"
-            guard let url = URL(string: urlStr) else {
-                Log("FSAPI: Invalid URL: \(urlStr)")
-                return nil
-            }
-
-            let start = Date()
-            do {
-                let (data, _) = try await session.data(from: url)
-                let ms = Int(Date().timeIntervalSince(start) * 1000)
-                if data.isEmpty {
-                    Log("FSAPI: \(path) -> empty (\(ms)ms), invalidating session")
-                    sid = nil
-                    continue
-                }
-                Log("FSAPI: \(path) -> \(data.count)B (\(ms)ms)")
-                return data
-            } catch {
-                let ms = Int(Date().timeIntervalSince(start) * 1000)
-                Log("FSAPI: \(path) -> error (\(ms)ms): \(error.localizedDescription)")
-                sid = nil
-                if attempt == 0 { continue }
-                return nil
-            }
-        }
-        return nil
     }
 
     func get(_ ip: String, node: String) async -> (status: String, value: String?) {
-        guard let data = await request(ip, path: "GET/\(node)?pin=\(pin)") else {
-            return ("FS_REQUEST_FAILED", nil)
-        }
+        guard let url = URL(string: "http://\(ip)/fsapi/GET/\(node)?pin=\(pin)"),
+              let data = await fetch(url) else { return ("FS_REQUEST_FAILED", nil) }
         let r = FSAPIGetParser.parse(data)
         return (r.status, r.value)
     }
 
     func set(_ ip: String, node: String, value: String) async -> String {
         let v = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
-        guard let data = await request(ip, path: "SET/\(node)?pin=\(pin)&value=\(v)") else {
-            return "FS_REQUEST_FAILED"
-        }
+        guard let url = URL(string: "http://\(ip)/fsapi/SET/\(node)?pin=\(pin)&value=\(v)"),
+              let data = await fetch(url) else { return "FS_REQUEST_FAILED" }
         return FSAPIGetParser.parse(data).status
     }
 
     func list(_ ip: String, node: String, maxItems: Int = 100) async -> FSAPIListParser {
-        guard let data = await request(ip, path: "LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)") else {
-            let r = FSAPIListParser()
-            return r
-        }
+        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)"),
+              let data = await fetch(url) else { return FSAPIListParser() }
         return FSAPIListParser.parse(data)
     }
 
@@ -254,9 +206,10 @@ actor FSAPIClient {
         for i in stride(from: 0, to: nodes.count, by: 5) {
             let chunk = Array(nodes[i..<min(i + 5, nodes.count)])
             let q = chunk.map { "node=\($0)" }.joined(separator: "&")
-            guard let data = await request(ip, path: "GET_MULTIPLE?pin=\(pin)&\(q)") else {
-                if result.isEmpty { return [:] } // first chunk failed — bail
-                break // subsequent failure — return what we have
+            guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)"),
+                  let data = await fetch(url) else {
+                if result.isEmpty { return [:] }
+                break
             }
             result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
         }

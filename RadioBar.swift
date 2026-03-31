@@ -396,8 +396,14 @@ final class RadioViewModel: ObservableObject {
     var isDraggingVolume = false
     var isDraggingSeek = false
     private var isPolling = false
+    private var presetsLoaded = false
     private var pollTimer: Timer?
     private(set) var client: FSAPIClient
+
+    /// Only fires objectWillChange (and triggers SwiftUI re-render) when the value actually differs.
+    private func set<T: Equatable>(_ kp: ReferenceWritableKeyPath<RadioViewModel, T>, _ v: T) {
+        if self[keyPath: kp] != v { self[keyPath: kp] = v }
+    }
 
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
@@ -445,47 +451,51 @@ final class RadioViewModel: ObservableObject {
 
         guard !vals.isEmpty else {
             if isConnected { Log("VM: Lost connection to \(ip)") }
-            isConnected = false
-            connectionError = "Cannot reach radio at \(ip)"
+            set(\.isConnected, false)
+            set(\.connectionError, "Cannot reach radio at \(ip)")
             return
         }
 
         let wasConnected = isConnected
-        isConnected = true
-        connectionError = nil
+        set(\.isConnected, true)
+        set(\.connectionError, nil)
         if !wasConnected { Log("VM: Connected to \(ip)") }
 
-        power = vals["netRemote.sys.power"] == "1"
-        radioName = vals["netRemote.sys.info.friendlyName"] ?? "Radio"
-        if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
-        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { volume = v }
-        muted = vals["netRemote.sys.audio.mute"] == "1"
-        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { eqPresetId = v }
+        // Update all properties with equality checks to avoid unnecessary SwiftUI re-renders.
+        // Without these guards, ~20 @Published updates per poll cause the view tree to re-render
+        // even when nothing changed, blocking the main actor for seconds on complex views.
+        set(\.power, vals["netRemote.sys.power"] == "1")
+        set(\.radioName, vals["netRemote.sys.info.friendlyName"] ?? "Radio")
+        if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { set(\.maxVolume, v) }
+        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { set(\.volume, v) }
+        set(\.muted, vals["netRemote.sys.audio.mute"] == "1")
+        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { set(\.eqPresetId, v) }
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
-        playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
+        set(\.playStatus, statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped")
 
         let newTrack = vals["netRemote.play.info.name"] ?? ""
         if newTrack != trackName { Log("VM: Now playing: \(newTrack)") }
-        trackName = newTrack
-        artist = vals["netRemote.play.info.artist"] ?? ""
-        infoText = vals["netRemote.play.info.text"] ?? ""
-        if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
-        else { artworkURL = nil }
-        if let d = vals["netRemote.play.info.duration"], let v = Int(d) { duration = v }
-        if !isDraggingSeek, let p = vals["netRemote.play.position"], let v = Int(p) { position = v }
+        set(\.trackName, newTrack)
+        set(\.artist, vals["netRemote.play.info.artist"] ?? "")
+        set(\.infoText, vals["netRemote.play.info.text"] ?? "")
+        let newArt: URL? = vals["netRemote.play.info.graphicUri"].flatMap { $0.isEmpty ? nil : URL(string: $0) }
+        set(\.artworkURL, newArt)
+        if let d = vals["netRemote.play.info.duration"], let v = Int(d) { set(\.duration, v) }
+        if !isDraggingSeek, let p = vals["netRemote.play.position"], let v = Int(p) { set(\.position, v) }
 
         // Spotify
-        spotifyUser = vals["netRemote.spotify.username"] ?? ""
+        set(\.spotifyUser, vals["netRemote.spotify.username"] ?? "")
         let brMap = ["0": "Low", "1": "Normal", "2": "High", "3": "Very High"]
-        spotifyBitRate = brMap[vals["netRemote.spotify.bitRate"] ?? ""] ?? ""
+        set(\.spotifyBitRate, brMap[vals["netRemote.spotify.bitRate"] ?? ""] ?? "")
 
         let newModeId = Int(vals["netRemote.sys.mode"] ?? "0") ?? 0
         let modeChanged = newModeId != modeId
-        modeId = newModeId
+        set(\.modeId, newModeId)
         if modeChanged {
             Log("VM: Mode changed to \(newModeId)")
             browseItems = []; browseDepth = 0; browseTitle = ""
+            presetsLoaded = false
         }
 
         // Fetch modes + EQ presets once
@@ -503,12 +513,14 @@ final class RadioViewModel: ObservableObject {
                 Log("VM: Loaded \(eqPresets.count) EQ presets")
             }
         }
-        modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
+        set(\.modeName, modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)")
 
-        // Fetch presets on mode change
-        if power && (modeChanged || presets.isEmpty) {
+        // Fetch presets once per mode (not every poll)
+        if power && (modeChanged || !presetsLoaded) {
+            presetsLoaded = true
             let r = await client.list(ip, node: "netRemote.nav.presets")
-            presets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
+            let newPresets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
+            if presets.count != newPresets.count { presets = newPresets }
         }
     }
 
@@ -522,7 +534,7 @@ final class RadioViewModel: ObservableObject {
         await client.invalidateSession()
         isConnected = false
         connectionError = nil
-        modes = []; eqPresets = []; presets = []
+        modes = []; eqPresets = []; presets = []; presetsLoaded = false
         await poll()
     }
 

@@ -280,7 +280,11 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
 final class RadioViewModel: ObservableObject {
     /// Connection
     @Published var radioIP: String {
-        didSet { UserDefaults.standard.set(radioIP, forKey: "radioBarIP") }
+        didSet {
+            UserDefaults.standard.set(radioIP, forKey: "radioBarIP")
+            deviceInfoLoaded = false; presetsLoaded = false
+            modes = []; eqPresets = []
+        }
     }
 
     @Published var radioPin: String {
@@ -335,8 +339,13 @@ final class RadioViewModel: ObservableObject {
 
     // Internal
     var isDraggingVolume = false
+    var popoverVisible = false {
+        didSet { if popoverVisible != oldValue { restartTimer() } }
+    }
+
     private var isPolling = false
     private var presetsLoaded = false
+    private var deviceInfoLoaded = false
     private var pollTimer: Timer?
     private var client: FSAPIClient
 
@@ -347,16 +356,18 @@ final class RadioViewModel: ObservableObject {
         radioPin = pin
         client = FSAPIClient(pin: pin)
         Log("APP: Init (ip=\(ip))")
-        startPolling()
+        restartTimer()
+        Task { await poll() }
     }
 
-    func startPolling() {
+    private func restartTimer() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+        let interval: TimeInterval = popoverVisible ? 4 : 60
+        Log("VM: Poll interval -> \(Int(interval))s (popover \(popoverVisible ? "open" : "closed"))")
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in await self.poll() }
         }
-        Task { await poll() }
     }
 
     func poll() async {
@@ -365,13 +376,29 @@ final class RadioViewModel: ObservableObject {
         defer { isPolling = false }
 
         let ip = radioIP
+
+        // When popover is closed, only check power for the menubar icon
+        if !popoverVisible {
+            let r = await client.get(ip, node: "netRemote.sys.power")
+            if r.status == "FS_OK" {
+                let wasConnected = isConnected
+                isConnected = true; connectionError = nil
+                power = r.value == "1"
+                if !wasConnected { Log("VM: Connected to \(ip)") }
+            } else {
+                if isConnected { Log("VM: Lost connection to \(ip)") }
+                isConnected = false; connectionError = "Cannot reach radio at \(ip)"
+            }
+            return
+        }
+
+        // Full poll when popover is visible
         let vals = await client.getMultiple(ip, nodes: [
             "netRemote.sys.power",
             "netRemote.sys.mode",
             "netRemote.sys.audio.volume",
             "netRemote.sys.audio.mute",
             "netRemote.sys.audio.eqPreset",
-            "netRemote.sys.caps.volumeSteps",
             "netRemote.play.status",
             "netRemote.play.info.name",
             "netRemote.play.info.text",
@@ -379,7 +406,6 @@ final class RadioViewModel: ObservableObject {
             "netRemote.play.info.graphicUri",
             "netRemote.play.info.duration",
             "netRemote.play.position",
-            "netRemote.sys.info.friendlyName",
             "netRemote.spotify.username",
             "netRemote.spotify.bitRate",
         ])
@@ -395,8 +421,6 @@ final class RadioViewModel: ObservableObject {
         connectionError = nil
 
         power = vals["netRemote.sys.power"] == "1"
-        radioName = vals["netRemote.sys.info.friendlyName"] ?? "Radio"
-        if let s = vals["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
         if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { volume = v }
         muted = vals["netRemote.sys.audio.mute"] == "1"
         if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { eqPresetId = v }
@@ -426,7 +450,16 @@ final class RadioViewModel: ObservableObject {
             presetsLoaded = false
         }
 
-        // Fetch modes list once
+        // Fetch device info, modes, and EQ presets once per connection
+        if !deviceInfoLoaded {
+            deviceInfoLoaded = true
+            let info = await client.getMultiple(ip, nodes: [
+                "netRemote.sys.info.friendlyName",
+                "netRemote.sys.caps.volumeSteps",
+            ])
+            radioName = info["netRemote.sys.info.friendlyName"] ?? radioName
+            if let s = info["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
+        }
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
             if r.status == "FS_OK" {
@@ -740,7 +773,11 @@ struct RadioMenuView: View {
         .onAppear {
             ipField = vm.radioIP
             pinField = vm.radioPin
+            vm.popoverVisible = true
             Task { await vm.poll() }
+        }
+        .onDisappear {
+            vm.popoverVisible = false
         }
     }
 

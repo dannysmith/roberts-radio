@@ -2,8 +2,8 @@
 // Build & run: ./bin/radiobar-gui
 // Or manually: swiftc -parse-as-library RadioBar.swift -o RadioBar && ./RadioBar
 
-import SwiftUI
 import Foundation
+import SwiftUI
 
 // MARK: - Debug Logging
 
@@ -33,21 +33,23 @@ final class FSAPIGetParser: NSObject, XMLParserDelegate {
         return (handler.status, handler.value)
     }
 
-    func parser(_ parser: XMLParser, didStartElement name: String,
-                namespaceURI: String?, qualifiedName: String?,
-                attributes: [String: String] = [:]) {
+    func parser(_: XMLParser, didStartElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?,
+                attributes _: [String: String] = [:]) {
         path.append(name)
         text = ""
     }
 
-    func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+    func parser(_: XMLParser, foundCharacters string: String) {
+        text += string
+    }
 
-    func parser(_ parser: XMLParser, didEndElement name: String,
-                namespaceURI: String?, qualifiedName: String?) {
+    func parser(_: XMLParser, didEndElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?) {
         defer { path.removeLast() }
         let parent = path.count >= 2 ? path[path.count - 2] : ""
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name == "status" && parent == "fsapiResponse" { status = t }
+        if name == "status", parent == "fsapiResponse" { status = t }
         else if parent == "value" { value = t }
     }
 }
@@ -72,8 +74,8 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
         return (handler.status, handler.items)
     }
 
-    func parser(_ parser: XMLParser, didStartElement name: String,
-                namespaceURI: String?, qualifiedName: String?,
+    func parser(_: XMLParser, didStartElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?,
                 attributes: [String: String] = [:]) {
         path.append(name)
         text = ""
@@ -85,14 +87,16 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
         }
     }
 
-    func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+    func parser(_: XMLParser, foundCharacters string: String) {
+        text += string
+    }
 
-    func parser(_ parser: XMLParser, didEndElement name: String,
-                namespaceURI: String?, qualifiedName: String?) {
+    func parser(_: XMLParser, didEndElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?) {
         defer { path.removeLast() }
         let parent = path.count >= 2 ? path[path.count - 2] : ""
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name == "status" && parent == "fsapiResponse" { status = t }
+        if name == "status", parent == "fsapiResponse" { status = t }
         else if parent == "field", let fn = fieldName { itemFields[fn] = t }
         else if name == "item", let k = itemKey { items.append(Item(key: k, fields: itemFields)) }
     }
@@ -115,26 +119,28 @@ final class FSAPIMultiParser: NSObject, XMLParserDelegate {
         return handler.values
     }
 
-    func parser(_ parser: XMLParser, didStartElement name: String,
-                namespaceURI: String?, qualifiedName: String?,
-                attributes: [String: String] = [:]) {
+    func parser(_: XMLParser, didStartElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?,
+                attributes _: [String: String] = [:]) {
         path.append(name)
         text = ""
     }
 
-    func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+    func parser(_: XMLParser, foundCharacters string: String) {
+        text += string
+    }
 
-    func parser(_ parser: XMLParser, didEndElement name: String,
-                namespaceURI: String?, qualifiedName: String?) {
+    func parser(_: XMLParser, didEndElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?) {
         defer { path.removeLast() }
         let parent = path.count >= 2 ? path[path.count - 2] : ""
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         switch (name, parent) {
         case ("status", "fsapiResponse"): curStatus = t
-        case ("node", "fsapiResponse"):   curNode = t
-        case (_, "value"):                curValue = t
+        case ("node", "fsapiResponse"): curNode = t
+        case (_, "value"): curValue = t
         case ("fsapiResponse", _):
-            if curStatus == "FS_OK" && !curNode.isEmpty { values[curNode] = curValue }
+            if curStatus == "FS_OK", !curNode.isEmpty { values[curNode] = curValue }
             curNode = ""; curStatus = ""; curValue = ""
         default: break
         }
@@ -152,7 +158,7 @@ actor FSAPIClient {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 5
         cfg.timeoutIntervalForResource = 8
-        self.session = URLSession(configuration: cfg)
+        session = URLSession(configuration: cfg)
     }
 
     private func fetch(_ url: URL) async -> Data? {
@@ -191,10 +197,11 @@ actor FSAPIClient {
     func getMultiple(_ ip: String, nodes: [String]) async -> [String: String] {
         var result: [String: String] = [:]
         for i in stride(from: 0, to: nodes.count, by: 5) {
-            let chunk = Array(nodes[i..<min(i + 5, nodes.count)])
+            let chunk = Array(nodes[i ..< min(i + 5, nodes.count)])
             let q = chunk.map { "node=\($0)" }.joined(separator: "&")
             guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)"),
-                  let data = await fetch(url) else {
+                  let data = await fetch(url)
+            else {
                 if result.isEmpty { return [:] }
                 break
             }
@@ -245,7 +252,7 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
                 }
             }
 
-            guard n > 0, let response = String(bytes: buffer[0..<n], encoding: .utf8) else {
+            guard n > 0, let response = String(bytes: buffer[0 ..< n], encoding: .utf8) else {
                 continuation.resume(returning: nil); return
             }
 
@@ -271,9 +278,15 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
 
 @MainActor
 final class RadioViewModel: ObservableObject {
-    // Connection
-    @Published var radioIP: String { didSet { UserDefaults.standard.set(radioIP, forKey: "radioBarIP") } }
-    @Published var radioPin: String { didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") } }
+    /// Connection
+    @Published var radioIP: String {
+        didSet { UserDefaults.standard.set(radioIP, forKey: "radioBarIP") }
+    }
+
+    @Published var radioPin: String {
+        didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") }
+    }
+
     @Published var isConnected = false
     @Published var isDiscovering = false
     @Published var connectionError: String?
@@ -304,13 +317,15 @@ final class RadioViewModel: ObservableObject {
     @Published var eqPresets: [(id: Int, label: String)] = []
     @Published var eqPresetId = 0
 
-    // Alarms
+    /// Alarms
     @Published var alarms: [(key: Int, fields: [String: String])] = []
 
     // Spotify
     @Published var spotifyUser = ""
     @Published var spotifyBitRate = ""
-    var isSpotifyMode: Bool { modeName.lowercased().contains("spotify") }
+    var isSpotifyMode: Bool {
+        modeName.lowercased().contains("spotify")
+    }
 
     // Browse
     @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
@@ -328,9 +343,9 @@ final class RadioViewModel: ObservableObject {
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
         let pin = UserDefaults.standard.string(forKey: "radioBarPIN") ?? "1234"
-        self.radioIP = ip
-        self.radioPin = pin
-        self.client = FSAPIClient(pin: pin)
+        radioIP = ip
+        radioPin = pin
+        client = FSAPIClient(pin: pin)
         Log("APP: Init (ip=\(ip))")
         startPolling()
     }
@@ -427,7 +442,7 @@ final class RadioViewModel: ObservableObject {
         modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
 
         // Fetch presets on connect and mode change (not every poll)
-        if power && !presetsLoaded {
+        if power, !presetsLoaded {
             presetsLoaded = true
             let r = await client.list(ip, node: "netRemote.nav.presets")
             presets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
@@ -544,7 +559,7 @@ final class RadioViewModel: ObservableObject {
 
         // The radio's nav layer can take a moment to populate after enable/navigate.
         // Retry a few times if numItems is 0 or the list fetch fails.
-        for attempt in 0..<4 {
+        for attempt in 0 ..< 4 {
             if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
 
             let info = await client.getMultiple(ip, nodes: [
@@ -556,11 +571,11 @@ final class RadioViewModel: ObservableObject {
             browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
             let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
-            if numItems == 0 && attempt < 3 { continue }
+            if numItems == 0, attempt < 3 { continue }
             guard numItems > 0 else { browseItems = []; return }
 
             let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
-            if r.status == "FS_OK" && !r.items.isEmpty {
+            if r.status == "FS_OK", !r.items.isEmpty {
                 browseItems = r.items.map { item in
                     (key: item.key,
                      name: item.fields["name"] ?? "Item \(item.key)",
@@ -800,10 +815,10 @@ struct RadioMenuView: View {
     private var statusBadge: some View {
         Group {
             switch vm.playStatus {
-            case "playing":   Label("Playing", systemImage: "play.fill")
-            case "paused":    Label("Paused", systemImage: "pause.fill")
+            case "playing": Label("Playing", systemImage: "play.fill")
+            case "paused": Label("Paused", systemImage: "pause.fill")
             case "buffering": Label("Buffering", systemImage: "ellipsis")
-            default:          Label("Stopped", systemImage: "stop.fill")
+            default: Label("Stopped", systemImage: "stop.fill")
             }
         }
         .font(.system(size: 9))
@@ -850,7 +865,7 @@ struct RadioMenuView: View {
             .foregroundColor(vm.muted ? .red : .primary)
             .help(vm.muted ? "Unmute" : "Mute")
 
-            Slider(value: $vm.volume, in: 0...vm.maxVolume, step: 1) { EmptyView() }
+            Slider(value: $vm.volume, in: 0 ... vm.maxVolume, step: 1) { EmptyView() }
                 onEditingChanged: { editing in
                     vm.isDraggingVolume = editing
                     if !editing { Task { await vm.setVolume(Int(vm.volume)) } }
@@ -1034,7 +1049,7 @@ struct RadioMenuView: View {
         VStack(alignment: .leading, spacing: 4) {
             Button(action: {
                 showAlarms.toggle()
-                if showAlarms && vm.alarms.isEmpty { Task { await vm.fetchAlarms() } }
+                if showAlarms, vm.alarms.isEmpty { Task { await vm.fetchAlarms() } }
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "alarm").font(.system(size: 10))
@@ -1092,7 +1107,7 @@ struct RadioMenuView: View {
         if mask == 31 { return "Weekdays" }
         if mask == 96 { return "Weekends" }
         let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-        return (0..<7).filter { mask & (1 << $0) != 0 }.map { days[$0] }.joined(separator: " ")
+        return (0 ..< 7).filter { mask & (1 << $0) != 0 }.map { days[$0] }.joined(separator: " ")
     }
 
     // MARK: Settings
@@ -1166,7 +1181,7 @@ struct RadioMenuView: View {
 // MARK: - App
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         if !CommandLine.arguments.contains("--dock") {
             NSApp.setActivationPolicy(.accessory)
         }

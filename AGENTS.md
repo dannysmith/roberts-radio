@@ -57,6 +57,11 @@ bin/radiobar-gui [--dock] [--debug]
 - Actions are fire-and-forget: UI updates optimistically, the poll syncs actual state
 - Built with Swift Package Manager (`swift build -c release`)
 
+**Build a .app bundle:**
+```bash
+scripts/build-app.sh    # outputs dist/RadioBar.app
+```
+
 **After editing Swift code, run:**
 ```bash
 swiftformat Sources/        # auto-fix formatting

@@ -35,7 +35,13 @@ This compiles the app on first run (or when the source changes) and launches it.
 - `--dock` -- also show a dock icon (useful on small screens where the menubar is full)
 - `--debug` -- print request logs and state changes to stderr
 
-No Xcode project needed. The app is a single Swift file compiled with `swiftc`.
+No Xcode project needed. The app is a single Swift file built with Swift Package Manager.
+
+To build a standalone `.app` bundle (e.g. for dragging to `/Applications`):
+
+```bash
+scripts/build-app.sh    # outputs dist/RadioBar.app
+```
 
 ## CLI Tool
 

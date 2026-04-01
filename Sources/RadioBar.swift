@@ -3,6 +3,7 @@
 // Or manually: swiftc -parse-as-library RadioBar.swift -o RadioBar && ./RadioBar
 
 import Foundation
+import MenuBarExtraAccess
 import SwiftUI
 
 // MARK: - Debug Logging
@@ -1291,13 +1292,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct RadioBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var vm = RadioViewModel()
+    @State private var isMenuPresented = false
 
     var body: some Scene {
         MenuBarExtra {
             RadioMenuView(vm: vm)
+                .introspectMenuBarExtraWindow { window in
+                    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                    window.isMovable = false
+                    // Pin to the screen that owns the menubar icon
+                    if let screen = window.screen ?? NSApp.keyWindow?.screen {
+                        window.setFrame(window.frame, display: true)
+                        window.constrainFrameRect(window.frame, to: screen)
+                    }
+                }
         } label: {
             Image(systemName: vm.isConnected && vm.power ? "radio.fill" : "radio")
         }
+        .menuBarExtraAccess(isPresented: $isMenuPresented)
         .menuBarExtraStyle(.window)
     }
 }

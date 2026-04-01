@@ -55,7 +55,14 @@ bin/radiobar-gui [--dock] [--debug]
 - XML responses parsed with Foundation's XMLParser (not regex)
 - SSDP discovery uses POSIX UDP sockets
 - Actions are fire-and-forget: UI updates optimistically, the poll syncs actual state
-- Compiles with `swiftc -parse-as-library -O RadioBar.swift`
+- Built with Swift Package Manager (`swift build -c release`)
+
+**After editing Swift code, run:**
+```bash
+swiftformat Sources/        # auto-fix formatting
+swiftlint lint Sources/     # check for issues (should be 0 violations)
+swift build -c release      # verify it compiles
+```
 
 ## The `radio` CLI Tool
 

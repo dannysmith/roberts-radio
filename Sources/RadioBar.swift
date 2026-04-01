@@ -518,38 +518,53 @@ final class RadioViewModel: ObservableObject {
         await poll()
     }
 
-    // MARK: Browse
-
-    func startBrowse() async {
-        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        await fetchBrowseItems()
+    private func fire(_ node: String, _ value: String) {
+        let ip = radioIP
+        Task { _ = await client.set(ip, node: node, value: value) }
     }
 
-    func browseInto(_ key: Int) async {
-        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await fetchBrowseItems()
+    // MARK: Browse — stored Task avoids SwiftUI lifecycle cancellation
+
+    private var browseTask: Task<Void, Never>?
+
+    func startBrowse() {
+        browseTask?.cancel()
+        browseTask = Task {
+            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseBack() async {
-        _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await fetchBrowseItems()
+    func browseInto(_ key: Int) {
+        browseTask?.cancel()
+        browseTask = Task {
+            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "\(key)")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseSearch(_ term: String) async {
-        _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await fetchBrowseItems()
+    func browseBack() {
+        browseTask?.cancel()
+        browseTask = Task {
+            _ = await client.set(radioIP, node: "netRemote.nav.action.navigate", value: "4294967295")
+            await fetchBrowseItems()
+        }
     }
 
-    func browseSelect(_ key: Int) async {
-        _ = await client.set(radioIP, node: "netRemote.nav.action.selectItem", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+    func browseSearch(_ term: String) {
+        browseTask?.cancel()
+        browseTask = Task {
+            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
+            _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
+            await fetchBrowseItems()
+        }
+    }
+
+    func browseSelect(_ key: Int) {
+        if let name = browseItems.first(where: { $0.key == key })?.name {
+            trackName = name; artist = ""; infoText = ""
+        }
+        fire("netRemote.nav.action.selectItem", "\(key)")
     }
 
     private func fetchBrowseItems() async {
@@ -667,7 +682,7 @@ struct BrowseRow: View {
     }
 }
 
-enum ContentTab: String, CaseIterable { case presets, browse }
+enum SidePanel { case none, presets, browse }
 
 struct RadioMenuView: View {
     @ObservedObject var vm: RadioViewModel
@@ -675,39 +690,53 @@ struct RadioMenuView: View {
     @State private var showAlarms = false
     @State private var ipField = ""
     @State private var pinField = ""
-    @State private var contentTab: ContentTab = .presets
+    @State private var sidePanel: SidePanel = .none
     @State private var searchText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !vm.isConnected {
-                disconnectedView
-            } else if !vm.power {
-                standbyView
-                Divider().padding(.vertical, 4)
-            } else {
-                nowPlayingView
-                Divider().padding(.vertical, 4)
-                controlsView
-                Divider().padding(.vertical, 4)
-                volumeView
-                if !vm.modes.isEmpty {
-                    Divider().padding(.vertical, 4)
-                    modeView
+        HStack(alignment: .top, spacing: 0) {
+            // Main column
+            VStack(alignment: .leading, spacing: 0) {
+                if !vm.isConnected {
+                    disconnectedView
+                } else if !vm.power {
+                    standbyView
+                    Divider().padding(.vertical, 6)
+                } else {
+                    nowPlayingView
+                    Divider().padding(.vertical, 6)
+                    controlsView
+                    Divider().padding(.vertical, 6)
+                    volumeView
+                    if !vm.modes.isEmpty {
+                        Divider().padding(.vertical, 6)
+                        modeView
+                    }
+                    if vm.isSpotifyMode, !vm.spotifyUser.isEmpty {
+                        spotifyView
+                    }
+                    Divider().padding(.vertical, 6)
+                    sidePanelButtons
+                    Divider().padding(.vertical, 6)
+                    alarmsView
+                    Divider().padding(.vertical, 6)
                 }
-                if vm.isSpotifyMode && !vm.spotifyUser.isEmpty {
-                    spotifyView
-                }
-                Divider().padding(.vertical, 4)
-                contentTabsView
-                Divider().padding(.vertical, 4)
-                alarmsView
-                Divider().padding(.vertical, 4)
+                Spacer(minLength: 0)
+                bottomBar
             }
-            bottomBar
+            .frame(width: 280)
+            .padding(.trailing, sidePanel != .none ? 8 : 0)
+
+            // Side panel (expands to the right)
+            if sidePanel != .none {
+                Divider().padding(.vertical, 8)
+                sidePanelContent
+                    .frame(width: 260, alignment: .top)
+                    .padding(.leading, 4)
+            }
         }
-        .padding(12)
-        .frame(width: 300)
+        .padding(14)
+        .frame(minHeight: sidePanel != .none ? 420 : nil)
         .onAppear {
             ipField = vm.radioIP
             pinField = vm.radioPin
@@ -783,7 +812,7 @@ struct RadioMenuView: View {
                     if !vm.artist.isEmpty {
                         Text(vm.artist).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
                     }
-                    if !vm.infoText.isEmpty && vm.infoText != vm.trackName && vm.infoText != vm.artist {
+                    if !vm.infoText.isEmpty, vm.infoText != vm.trackName, vm.infoText != vm.artist {
                         Text(vm.infoText).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
                     }
                 }
@@ -932,30 +961,71 @@ struct RadioMenuView: View {
         .padding(.top, 2)
     }
 
-    // MARK: Content Tabs (Presets / Browse)
+    // MARK: Side Panel Buttons
 
-    private var contentTabsView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("", selection: $contentTab) {
-                Text("Presets").tag(ContentTab.presets)
-                Text("Browse").tag(ContentTab.browse)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            switch contentTab {
-            case .presets: presetsContent
-            case .browse: browseContent
-            }
+    private var sidePanelButtons: some View {
+        HStack(spacing: 8) {
+            panelToggle("Presets", icon: "list.bullet", panel: .presets)
+            panelToggle("Browse", icon: "folder", panel: .browse)
+            Spacer()
         }
     }
 
-    private var presetsContent: some View {
+    private func panelToggle(_ label: String, icon: String, panel: SidePanel) -> some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sidePanel = sidePanel == panel ? .none : panel
+            }
+            if sidePanel == .browse, vm.browseItems.isEmpty {
+                vm.startBrowse()
+            }
+        }) {
+            Label(label, systemImage: icon)
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.bordered)
+        .tint(sidePanel == panel ? .accentColor : .secondary)
+        .controlSize(.small)
+    }
+
+    // MARK: Side Panel Content
+
+    private var sidePanelContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Text(sidePanel == .presets ? "Presets" : "Browse")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) { sidePanel = .none }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.bottom, 8)
+
+            if sidePanel == .presets {
+                presetsPanel
+            } else {
+                browsePanel
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 8)
+    }
+
+    private var presetsPanel: some View {
         Group {
             if vm.presets.isEmpty {
                 Text("No presets for this mode")
                     .font(.caption).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     VStack(spacing: 0) {
@@ -966,13 +1036,12 @@ struct RadioMenuView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 150)
             }
         }
     }
 
-    private var browseContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private var browsePanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
             // Search
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.secondary)
@@ -981,12 +1050,12 @@ struct RadioMenuView: View {
                     .font(.system(size: 11))
                     .onSubmit {
                         guard !searchText.isEmpty else { return }
-                        Task { await vm.browseSearch(searchText) }
+                        vm.browseSearch(searchText)
                     }
                 if !searchText.isEmpty {
                     Button(action: {
                         searchText = ""
-                        Task { await vm.startBrowse() }
+                        vm.startBrowse()
                     }) {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundColor(.secondary)
                     }
@@ -997,7 +1066,7 @@ struct RadioMenuView: View {
             // Navigation bar
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
-                    Button(action: { Task { await vm.browseBack() } }) {
+                    Button(action: { vm.browseBack() }) {
                         HStack(spacing: 2) {
                             Image(systemName: "chevron.left").font(.system(size: 10))
                             Text("Back").font(.system(size: 11))
@@ -1025,20 +1094,12 @@ struct RadioMenuView: View {
                     VStack(spacing: 0) {
                         ForEach(vm.browseItems, id: \.key) { item in
                             BrowseRow(name: item.name, isFolder: item.isFolder) {
-                                Task {
-                                    if item.isFolder { await vm.browseInto(item.key) }
-                                    else { await vm.browseSelect(item.key) }
-                                }
+                                if item.isFolder { vm.browseInto(item.key) }
+                                else { vm.browseSelect(item.key) }
                             }
                         }
                     }
                 }
-                .frame(maxHeight: 200)
-            }
-        }
-        .task(id: contentTab) {
-            if contentTab == .browse && vm.browseItems.isEmpty {
-                await vm.startBrowse()
             }
         }
     }
@@ -1085,9 +1146,9 @@ struct RadioMenuView: View {
         return HStack(spacing: 6) {
             Circle().fill(enabled ? Color.green : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
             Text(time).font(.system(size: 11, weight: .medium, design: .monospaced))
-            if let days = days { Text(days).font(.system(size: 10)).foregroundColor(.secondary) }
+            if let days { Text(days).font(.system(size: 10)).foregroundColor(.secondary) }
             Spacer()
-            if let vol = vol {
+            if let vol {
                 Image(systemName: "speaker.wave.1.fill").font(.system(size: 8)).foregroundColor(.secondary)
                 Text(vol).font(.system(size: 10)).foregroundColor(.secondary)
             }
@@ -1102,7 +1163,7 @@ struct RadioMenuView: View {
     }
 
     private func formatWeekdays(_ raw: String?) -> String? {
-        guard let raw = raw, let mask = Int(raw), mask > 0 else { return nil }
+        guard let raw, let mask = Int(raw), mask > 0 else { return nil }
         if mask == 127 { return "Every day" }
         if mask == 31 { return "Weekdays" }
         if mask == 96 { return "Weekends" }
@@ -1146,7 +1207,7 @@ struct RadioMenuView: View {
 
     private var bottomBar: some View {
         HStack {
-            if showSettings && vm.isConnected {
+            if showSettings, vm.isConnected {
                 VStack(alignment: .leading, spacing: 4) {
                     settingsFields
                     Button("Done") { showSettings = false }.controlSize(.small)

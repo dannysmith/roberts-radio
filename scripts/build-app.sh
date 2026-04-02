@@ -1,10 +1,16 @@
 #!/bin/bash
-# Build RadioBar.app bundle from the SPM executable
+# Build, sign, and optionally notarize RadioBar.app
+# Usage: scripts/build-app.sh [--notarize]
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
+NOTARIZE=false
+[[ "${1:-}" == "--notarize" ]] && NOTARIZE=true
+
+IDENTITY="Developer ID Application: Daniel Smith (XT349SJG9U)"
+KEYCHAIN_PROFILE="RadioBar"
 APP="$DIR/dist/RadioBar.app"
 CONTENTS="$APP/Contents"
 
@@ -70,4 +76,27 @@ cat > "$CONTENTS/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
-echo "Built: $APP"
+# Sign
+echo "Signing..."
+codesign --force --options runtime --sign "$IDENTITY" "$APP"
+
+# Verify signature
+codesign --verify --verbose "$APP" 2>&1
+
+if $NOTARIZE; then
+    echo "Notarizing (this may take a minute or two)..."
+    # Create a zip for submission
+    ZIP="$DIR/dist/RadioBar.zip"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+
+    # Submit and wait
+    xcrun notarytool submit "$ZIP" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+
+    # Staple the ticket to the app
+    xcrun stapler staple "$APP"
+    echo "Notarization complete."
+
+    rm -f "$ZIP"
+fi
+
+echo "Done: $APP"

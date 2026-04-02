@@ -75,7 +75,7 @@
     "netRemote.sys.net.ipConfig.dnsSecondary": {"value": "0", "type": "u32"},
     "netRemote.sys.net.keepConnected": {"value": "1", "type": "u8"},
     "netRemote.sys.net.wlan.connectedSSID": {"value": "42542d434d414a5446", "type": "array"},
-    "netRemote.sys.net.wlan.macAddress": {"value": "4c:09:fa:75:cf:43", "type": "c8_array"},
+    "netRemote.sys.net.wlan.macAddress": {"value": "XX:XX:XX:XX:XX:XX", "type": "c8_array"},
     "netRemote.sys.net.wlan.rssi": {"value": "20", "type": "u8"},
     "netRemote.sys.net.wlan.interfaceEnable": {"value": "1", "type": "u8"},
     "netRemote.sys.net.wlan.region": {"value": "3", "type": "u8"},

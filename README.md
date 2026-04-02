@@ -17,7 +17,7 @@ Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.
 - Mode switching (Internet Radio, Podcasts, DAB, FM, Spotify, etc.)
 - EQ presets
 - Preset selection per mode
-- Browse stations and podcasts with search
+- Browse stations and podcasts with live filter
 - Seek on podcasts and Spotify (click the progress bar)
 - Spotify Connect account info
 - Alarm display

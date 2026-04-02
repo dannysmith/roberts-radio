@@ -21,9 +21,15 @@ Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.
 - Auto-discover the radio on your network (SSDP)
 - Configurable IP and PIN
 
-## Build & Run
+## Install
 
-Requires macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
+Download `RadioBar.zip` from [Releases](../../releases), unzip, and drag `RadioBar.app` to your Applications folder. The app is signed and notarized, so it will run without Gatekeeper warnings.
+
+Requires macOS 13+.
+
+## Build from Source
+
+Requires Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
 bin/radiobar-gui
@@ -35,13 +41,14 @@ This compiles the app on first run (or when the source changes) and launches it.
 - `--dock` -- also show a dock icon (useful on small screens where the menubar is full)
 - `--debug` -- print request logs and state changes to stderr
 
-No Xcode project needed. The app is a single Swift file built with Swift Package Manager.
-
-To build a standalone `.app` bundle (e.g. for dragging to `/Applications`):
+To build a standalone `.app` bundle:
 
 ```bash
-scripts/build-app.sh    # outputs dist/RadioBar.app
+scripts/build-app.sh              # build + sign
+scripts/build-app.sh --notarize   # build + sign + notarize with Apple
 ```
+
+Both output `dist/RadioBar.app` and `dist/RadioBar.zip`.
 
 ## CLI Tool
 

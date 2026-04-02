@@ -99,4 +99,11 @@ if $NOTARIZE; then
     rm -f "$ZIP"
 fi
 
+# Create distributable zip
+echo "Creating zip..."
+ZIP="$DIR/dist/RadioBar.zip"
+rm -f "$ZIP"
+ditto -c -k --keepParent "$APP" "$ZIP"
+echo "Zip: $ZIP ($(du -h "$ZIP" | cut -f1 | xargs))"
+
 echo "Done: $APP"

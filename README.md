@@ -1,10 +1,13 @@
 # RadioBar
 
+![Stylized image of a Roberts Radio](docs/image.png)
+
+
 A macOS menubar app for controlling a Roberts Revival iStream 3L internet radio over the local network.
 
 Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.md) used by Frontier Smart-based radios, so *should* also work with other Radios.
 
-![Stylized image of a Roberts Radio](docs/image.png)
+![Screenshot of the app](screenshot.png)
 
 ## Features
 

@@ -169,7 +169,7 @@ Navigation is **stateful** -- you must enable it (`nav.state=1`) before other na
 | `netRemote.nav.numItems` | S32 | RO | Item count |
 | `netRemote.nav.depth` | U8 | RO | Directory depth |
 | `netRemote.nav.currentTitle` | C8 | RO | Current level title |
-| `netRemote.nav.searchTerm` | C8 | RW | Search query |
+| `netRemote.nav.searchTerm` | C8 | RW | Search query (form backing store; setting alone does not trigger search) |
 | `netRemote.nav.caps` | U32 | RO | Nav capability flags |
 | `netRemote.nav.action.navigate` | U32 | SET | Enter a directory (by item key, or 4294967295 to go back) |
 | `netRemote.nav.action.selectItem` | U32 | SET | Play an item (by item key) |

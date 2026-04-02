@@ -585,15 +585,6 @@ final class RadioViewModel: ObservableObject {
         }
     }
 
-    func browseSearch(_ term: String) {
-        browseTask?.cancel()
-        browseTask = Task {
-            _ = await client.set(radioIP, node: "netRemote.nav.state", value: "1")
-            _ = await client.set(radioIP, node: "netRemote.nav.searchTerm", value: term)
-            await fetchBrowseItems()
-        }
-    }
-
     func browseSelect(_ key: Int) {
         if let name = browseItems.first(where: { $0.key == key })?.name {
             trackName = name; artist = ""; infoText = ""
@@ -725,7 +716,7 @@ struct RadioMenuView: View {
     @State private var ipField = ""
     @State private var pinField = ""
     @State private var sidePanel: SidePanel = .none
-    @State private var searchText = ""
+    @State private var filterText = ""
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -1078,23 +1069,21 @@ struct RadioMenuView: View {
         }
     }
 
+    private var filteredBrowseItems: [(key: Int, name: String, isFolder: Bool)] {
+        guard !filterText.isEmpty else { return vm.browseItems }
+        return vm.browseItems.filter { $0.name.localizedCaseInsensitiveContains(filterText) }
+    }
+
     private var browsePanel: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Search
+            // Filter
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.secondary)
-                TextField("Search \(vm.modeName)...", text: $searchText)
+                Image(systemName: "line.3.horizontal.decrease").font(.system(size: 10)).foregroundColor(.secondary)
+                TextField("Filter...", text: $filterText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11))
-                    .onSubmit {
-                        guard !searchText.isEmpty else { return }
-                        vm.browseSearch(searchText)
-                    }
-                if !searchText.isEmpty {
-                    Button(action: {
-                        searchText = ""
-                        vm.startBrowse()
-                    }) {
+                if !filterText.isEmpty {
+                    Button(action: { filterText = "" }) {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
@@ -1104,7 +1093,10 @@ struct RadioMenuView: View {
             // Navigation bar
             HStack(spacing: 4) {
                 if vm.browseDepth > 0 {
-                    Button(action: { vm.browseBack() }) {
+                    Button(action: {
+                        filterText = ""
+                        vm.browseBack()
+                    }) {
                         HStack(spacing: 2) {
                             Image(systemName: "chevron.left").font(.system(size: 10))
                             Text("Back").font(.system(size: 11))
@@ -1128,12 +1120,20 @@ struct RadioMenuView: View {
                     .font(.caption).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
             } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(vm.browseItems, id: \.key) { item in
-                            BrowseRow(name: item.name, isFolder: item.isFolder) {
-                                if item.isFolder { vm.browseInto(item.key) }
-                                else { vm.browseSelect(item.key) }
+                let items = filteredBrowseItems
+                if items.isEmpty {
+                    Text("No matches")
+                        .font(.caption).foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 8)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(items, id: \.key) { item in
+                                BrowseRow(name: item.name, isFolder: item.isFolder) {
+                                    filterText = ""
+                                    if item.isFolder { vm.browseInto(item.key) }
+                                    else { vm.browseSelect(item.key) }
+                                }
                             }
                         }
                     }

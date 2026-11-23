@@ -35,7 +35,8 @@ FSAPI is a simple HTTP API. Send GET requests, receive XML responses. No officia
 ## Discovery
 
 - **SSDP:** the iStream 3L answers `urn:schemas-frontier-silicon-com:undok:fsapi:1` and `ssdp:all`, but not the `fs_reference` or `invalid` targets used by some other radios.
-- **Bonjour:** advertises `_undok._tcp` with TXT `VendorID=undok DeviceInfoLocation=/dd.xml FsAPILocation=/fsapi`. The advertised `/dd.xml` returns 404.
+- **Bonjour:** advertises `_undok._tcp` with TXT `VendorID=undok DeviceInfoLocation=/dd.xml FsAPILocation=/fsapi`. `/dd.xml` is served on port 8080, not port 80.
+- **UPnP:** port 8080 hosts a MediaRenderer with AVTransport, ConnectionManager and RenderingControl at `/<Service>/control`. It accepts MP3, AAC, M4A and M4B over HTTP from the LAN, with pause, seek and next track. Public URLs we tried were rejected.
 - **`GET /device`:** needs no PIN and returns the firmware version and `webfsapi` URL. Its `friendlyName` is the placeholder `frname`, so read `netRemote.sys.info.friendlyName` instead.
 - **Reliability:** multicast replies can go missing on Wi-Fi, even when a direct query works, and the Mac's Bonjour cache can return a radio that's unreachable. Verify every candidate with `/device`, then an FSAPI read.
 
@@ -196,8 +197,9 @@ Presets are **per-mode** (see the slot counts under Capabilities by Mode), and e
 | Save current to slot | `SET/netRemote.play.addPreset?pin=1234&value=<index>` |
 | Delete preset | `SET/netRemote.nav.preset.delete?pin=1234&value=<index>` |
 | Swap positions | SET `swap.index1`, `swap.index2`, then `swap.swap=1` |
+| Write or clear a slot | `LIST_SET/netRemote.nav.presets?pin=1234&key=<index>&name=<name>&type=AirableRadio&url=<encoded url>` |
 
-You **cannot create a preset from an arbitrary URL** -- the upload blob format is undocumented. You must navigate to and play the station first, then save it.
+Writing a slot accepts any HTTP or HTTPS audio URL. Send a blank `name` and `url` to clear it. Internet Radio and Podcasts share the same 40 slots.
 
 ### Spotify
 

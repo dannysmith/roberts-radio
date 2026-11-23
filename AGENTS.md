@@ -105,7 +105,7 @@ Set `RADIO_IP` and `RADIO_PIN` env vars to override defaults.
 
 ## Key Technical Details
 
-- **Presets are per-mode:** slot counts are in `docs/fsapi-reference.md`. Cannot create presets from arbitrary URLs.
+- **Presets are per-mode:** slot counts are in `docs/fsapi-reference.md`. `LIST_SET` can write a preset from any audio URL.
 - **Navigation is stateful:** must enable (`nav.state=1`) before browsing or reading presets. The radio turns it off on every mode change, and each level fetches from Airable's cloud.
 - **Capabilities vary by mode:** live Internet Radio can stop but not pause. See `docs/fsapi-reference.md`.
 - **No SSL cert verification:** the radio doesn't verify HTTPS certs to Airable, enabling community self-hosted backends via DNS redirection.

@@ -86,15 +86,15 @@ Before writing SwiftUI or concurrency code, consult the `swiftui-specialist`, `s
 - [x] Raise the minimum to macOS 27 in `Package.swift`, `scripts/build-app.sh` and `README.md`.
 - [x] Move to the current Swift tools version and Swift 6 language mode. Update `.swift-version` and `.swiftformat`.
 - [x] Update MenuBarExtraAccess to 1.3.1.
-- [ ] Confirm the popover works on macOS 27, including multi-monitor positioning.
+- [x] Confirm the popover works on macOS 27, including multi-monitor positioning.
 - [x] Check whether native SwiftUI now covers what MenuBarExtraAccess provides. The macOS 27 SDK still has no native presented state or window access for `MenuBarExtra`, so the dependency stays.
 - [x] Split `Sources/RadioBar.swift` into a small set of files by responsibility (app, FSAPI client and parsers, discovery, model, views) in a move-only commit.
 - [x] Migrate the view model to `@Observable`.
 - [x] Replace tuples with small `Identifiable` models and playback status strings with an enum.
 - [x] Replace `Timer` with a single async polling loop and use `Task.sleep(for:)`.
 - [x] Replace soft-deprecated SwiftUI APIs such as `foregroundColor` and `cornerRadius`, and fix the SwiftLint violation.
-- [ ] Confirm fast polling runs only while the popover is open.
-- [ ] Confirm every existing control still works in the real app.
+- [x] Confirm fast polling runs only while the popover is open.
+- [x] Confirm every existing control still works in the real app.
 
 Done when formatting, linting and the release build are clean, and every existing control still works in the real app.
 

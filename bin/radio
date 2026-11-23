@@ -8,37 +8,12 @@ set -euo pipefail
 RADIO="${RADIO_IP:-192.168.1.72}"
 PIN="${RADIO_PIN:-1234}"
 BASE="http://$RADIO/fsapi"
-SESSION_FILE="/tmp/radio-session-${RADIO}"
 
-# --- session management ---
-
-get_sid() {
-  if [ -f "$SESSION_FILE" ]; then
-    cat "$SESSION_FILE"
-  else
-    new_session
-  fi
-}
-
-new_session() {
-  local sid
-  sid=$(curl -s -m 5 "$BASE/CREATE_SESSION?pin=$PIN" 2>/dev/null | xq -r '.fsapiResponse.sessionId // empty' || true)
-  if [ -n "$sid" ]; then
-    echo "$sid" > "$SESSION_FILE"
-    echo "$sid"
-  fi
-}
-
-# Make an FSAPI request, retrying once if session is stale
+# Make an FSAPI request, reporting connection and PIN failures as an FSAPI status.
+# The PIN is sent per request because sessions can conflict with other clients.
 fsapi_curl() {
-  local url="$1" sid result
-  sid=$(get_sid)
-  result=$(curl -s -m 8 "${url}&sid=${sid}" 2>/dev/null || true)
-  if [ -z "$result" ]; then
-    rm -f "$SESSION_FILE"
-    sid=$(new_session)
-    result=$(curl -s -m 8 "${url}&sid=${sid}" 2>/dev/null || true)
-  fi
+  local result
+  result=$(curl -fs -m 8 "$1" 2>/dev/null || true)
   [ -z "$result" ] && result='<fsapiResponse><status>FS_REQUEST_FAILED</status></fsapiResponse>'
   echo "$result"
 }
@@ -229,8 +204,6 @@ case "$cmd" in
   spotify)       fsapi_multi netRemote.spotify.username netRemote.spotify.status \
                    netRemote.spotify.bitRate netRemote.spotify.lastError ;;
 
-  session)       rm -f "$SESSION_FILE"; new_session > /dev/null && echo '{"status": "ok"}' ;;
-
   get)           fsapi_get "$1" ;;
   set)           fsapi_set "$1" "$2" ;;
   list)          fsapi_list "$1" "${2:-100}" ;;
@@ -263,7 +236,7 @@ MODE
   modes             List available modes
 
 PRESETS
-  presets           List presets for current mode
+  presets           List presets for current mode (run 'nav on' first after changing mode)
   preset <n>        Select preset n
 
 NAVIGATION
@@ -284,7 +257,6 @@ OTHER
   clock             Date/time
   alarms            Alarm config
   spotify           Spotify Connect status
-  session           Force new session
 
 RAW ACCESS
   get <node>        GET any node

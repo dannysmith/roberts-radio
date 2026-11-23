@@ -58,7 +58,8 @@ func discoverRadio(timeout: TimeInterval = 3) async -> String? {
             // Fallback: sender IP
             var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &sender.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
-            continuation.resume(returning: String(cString: ipBuf))
+            let ipBytes = ipBuf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            continuation.resume(returning: String(decoding: ipBytes, as: UTF8.self))
         }
     }
 }

@@ -66,7 +66,7 @@ struct BrowseRow: View {
 enum SidePanel { case none, presets, browse }
 
 struct RadioMenuView: View {
-    @ObservedObject var vm: RadioViewModel
+    @Bindable var vm: RadioViewModel
     @State private var showSettings = false
     @State private var showAlarms = false
     @State private var ipField = ""
@@ -121,11 +121,6 @@ struct RadioMenuView: View {
         .onAppear {
             ipField = vm.radioIP
             pinField = vm.radioPin
-            vm.popoverVisible = true
-            Task { await vm.poll() }
-        }
-        .onDisappear {
-            vm.popoverVisible = false
         }
     }
 
@@ -232,10 +227,10 @@ struct RadioMenuView: View {
     private var statusBadge: some View {
         Group {
             switch vm.playStatus {
-            case "playing": Label("Playing", systemImage: "play.fill")
-            case "paused": Label("Paused", systemImage: "pause.fill")
-            case "buffering": Label("Buffering", systemImage: "ellipsis")
-            default: Label("Stopped", systemImage: "stop.fill")
+            case .playing: Label("Playing", systemImage: "play.fill")
+            case .paused: Label("Paused", systemImage: "pause.fill")
+            case .buffering: Label("Buffering", systemImage: "ellipsis")
+            case .stopped: Label("Stopped", systemImage: "stop.fill")
             }
         }
         .font(.system(size: 9))
@@ -253,9 +248,9 @@ struct RadioMenuView: View {
             }.buttonStyle(.borderless).help("Previous")
 
             Button(action: { Task { await vm.playPause() } }) {
-                Image(systemName: vm.playStatus == "playing" ? "pause.fill" : "play.fill")
+                Image(systemName: vm.playStatus == .playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 20))
-            }.buttonStyle(.borderless).help(vm.playStatus == "playing" ? "Pause" : "Play")
+            }.buttonStyle(.borderless).help(vm.playStatus == .playing ? "Pause" : "Play")
 
             Button(action: { Task { await vm.stop() } }) {
                 Image(systemName: "stop.fill").font(.system(size: 14))
@@ -315,11 +310,8 @@ struct RadioMenuView: View {
     private var modeView: some View {
         HStack(spacing: 8) {
             Text("Mode").font(.caption).foregroundColor(.secondary)
-            Picker("", selection: Binding(
-                get: { vm.modeId },
-                set: { id in Task { await vm.setMode(id) } },
-            )) {
-                ForEach(vm.modes, id: \.id) { mode in
+            Picker("", selection: $vm.selectedModeID) {
+                ForEach(vm.modes) { mode in
                     Text(mode.label).tag(mode.id)
                 }
             }
@@ -329,11 +321,8 @@ struct RadioMenuView: View {
             if !vm.eqPresets.isEmpty {
                 Spacer()
                 Text("EQ").font(.caption).foregroundColor(.secondary)
-                Picker("", selection: Binding(
-                    get: { vm.eqPresetId },
-                    set: { id in Task { await vm.setEqPreset(id) } },
-                )) {
-                    ForEach(vm.eqPresets, id: \.id) { eq in
+                Picker("", selection: $vm.selectedEQPresetID) {
+                    ForEach(vm.eqPresets) { eq in
                         Text(eq.label).tag(eq.id)
                     }
                 }
@@ -425,9 +414,9 @@ struct RadioMenuView: View {
         } else {
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(vm.presets, id: \.key) { preset in
-                        PresetRow(number: preset.key + 1, name: preset.name) {
-                            Task { await vm.selectPreset(preset.key) }
+                    ForEach(vm.presets) { preset in
+                        PresetRow(number: preset.id + 1, name: preset.name) {
+                            Task { await vm.selectPreset(preset.id) }
                         }
                     }
                 }
@@ -435,7 +424,7 @@ struct RadioMenuView: View {
         }
     }
 
-    private var filteredBrowseItems: [(key: Int, name: String, isFolder: Bool)] {
+    private var filteredBrowseItems: [BrowseItem] {
         guard !filterText.isEmpty else { return vm.browseItems }
         return vm.browseItems.filter { $0.name.localizedCaseInsensitiveContains(filterText) }
     }
@@ -494,13 +483,13 @@ struct RadioMenuView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
-                            ForEach(items, id: \.key) { item in
+                            ForEach(items) { item in
                                 BrowseRow(name: item.name, isFolder: item.isFolder) {
                                     filterText = ""
                                     if item.isFolder {
-                                        vm.browseInto(item.key)
+                                        vm.browseInto(item.id)
                                     } else {
-                                        vm.browseSelect(item.key)
+                                        vm.browseSelect(item.id)
                                     }
                                 }
                             }
@@ -537,7 +526,7 @@ struct RadioMenuView: View {
                         .font(.caption).foregroundColor(.secondary).padding(.vertical, 4)
                 } else {
                     VStack(spacing: 2) {
-                        ForEach(vm.alarms, id: \.key) { alarm in
+                        ForEach(vm.alarms) { alarm in
                             alarmRow(alarm)
                         }
                     }
@@ -546,48 +535,21 @@ struct RadioMenuView: View {
         }
     }
 
-    private func alarmRow(_ alarm: (key: Int, fields: [String: String])) -> some View {
-        let f = alarm.fields
-        let enabled = f["enable"] == "1"
-        let time = formatAlarmTime(f["time"] ?? "")
-        let days = formatWeekdays(f["weekdays"])
-        let vol = f["volume"]
-        return HStack(spacing: 6) {
-            Circle().fill(enabled ? Color.green : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
-            Text(time).font(.system(size: 11, weight: .medium, design: .monospaced))
-            if let days {
+    private func alarmRow(_ alarm: RadioAlarm) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(alarm.isEnabled ? Color.green : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
+            Text(alarm.time).font(.system(size: 11, weight: .medium, design: .monospaced))
+            if let days = alarm.days {
                 Text(days).font(.system(size: 10)).foregroundColor(.secondary)
             }
             Spacer()
-            if let vol {
+            if let volume = alarm.volume {
                 Image(systemName: "speaker.wave.1.fill").font(.system(size: 8)).foregroundColor(.secondary)
-                Text(vol).font(.system(size: 10)).foregroundColor(.secondary)
+                Text(volume).font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
         .padding(.vertical, 2).padding(.horizontal, 4)
-        .opacity(enabled ? 1.0 : 0.5)
-    }
-
-    private func formatAlarmTime(_ raw: String) -> String {
-        if let secs = Int(raw) {
-            return String(format: "%02d:%02d", secs / 3600, (secs % 3600) / 60)
-        }
-        return raw.isEmpty ? "--:--" : raw
-    }
-
-    private func formatWeekdays(_ raw: String?) -> String? {
-        guard let raw, let mask = Int(raw), mask > 0 else { return nil }
-        if mask == 127 {
-            return "Every day"
-        }
-        if mask == 31 {
-            return "Weekdays"
-        }
-        if mask == 96 {
-            return "Weekends"
-        }
-        let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-        return (0 ..< 7).filter { mask & (1 << $0) != 0 }.map { days[$0] }.joined(separator: " ")
+        .opacity(alarm.isEnabled ? 1.0 : 0.5)
     }
 
     // MARK: Settings
@@ -598,8 +560,8 @@ struct RadioMenuView: View {
                 TextField("IP address", text: $ipField)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
-                    .onSubmit { vm.radioIP = ipField; Task { await vm.poll() } }
-                Button("Set") { vm.radioIP = ipField; Task { await vm.poll() } }
+                    .onSubmit { vm.radioIP = ipField; vm.requestPoll() }
+                Button("Set") { vm.radioIP = ipField; vm.requestPoll() }
                     .controlSize(.small)
             }
             HStack(spacing: 4) {
@@ -608,7 +570,7 @@ struct RadioMenuView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(width: 60)
-                    .onSubmit { vm.updatePin(pinField); Task { await vm.poll() } }
+                    .onSubmit { vm.updatePin(pinField); vm.requestPoll() }
                 Spacer()
                 Button(action: { Task { await vm.discover() } }) {
                     HStack(spacing: 4) {

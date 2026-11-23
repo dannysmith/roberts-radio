@@ -1,84 +1,104 @@
 import Foundation
-import SwiftUI
+import Observation
 
-// MARK: - View Model
-
+/// Owns the radio's state and sends commands to it. Lives for the lifetime of the app.
 @MainActor
-final class RadioViewModel: ObservableObject {
+@Observable
+final class RadioViewModel {
     /// Connection
-    @Published var radioIP: String {
+    var radioIP: String {
         didSet {
             UserDefaults.standard.set(radioIP, forKey: "radioBarIP")
-            deviceInfoLoaded = false; presetsLoaded = false
-            modes = []; eqPresets = []
+            deviceInfoLoaded = false
+            presetsLoaded = false
+            modes = []
+            eqPresets = []
         }
     }
 
-    @Published var radioPin: String {
+    var radioPin: String {
         didSet { UserDefaults.standard.set(radioPin, forKey: "radioBarPIN") }
     }
 
-    @Published var isConnected = false
-    @Published var isDiscovering = false
-    @Published var connectionError: String?
+    var isConnected = false
+    var isDiscovering = false
+    var connectionError: String?
 
     // State
-    @Published var power = false
-    @Published var radioName = ""
-    @Published var modeName = ""
-    @Published var modeId = 0
-    @Published var volume: Double = 0
-    @Published var maxVolume: Double = 31
-    @Published var muted = false
+    var power = false
+    var radioName = ""
+    var modeName = ""
+    var modeId = 0
+    var volume: Double = 0
+    var maxVolume: Double = 31
+    var muted = false
 
     // Now playing
-    @Published var playStatus = "stopped"
-    @Published var trackName = ""
-    @Published var artist = ""
-    @Published var infoText = ""
-    @Published var artworkURL: URL?
-    @Published var position = 0
-    @Published var duration = 0
+    var playStatus = PlayStatus.stopped
+    var trackName = ""
+    var artist = ""
+    var infoText = ""
+    var artworkURL: URL?
+    var position = 0
+    var duration = 0
 
     // Lists
-    @Published var modes: [(id: Int, label: String)] = []
-    @Published var presets: [(key: Int, name: String)] = []
+    var modes: [RadioMode] = []
+    var presets: [RadioPreset] = []
 
     // EQ
-    @Published var eqPresets: [(id: Int, label: String)] = []
-    @Published var eqPresetId = 0
+    var eqPresets: [EQPreset] = []
+    var eqPresetId = 0
 
     /// Alarms
-    @Published var alarms: [(key: Int, fields: [String: String])] = []
+    var alarms: [RadioAlarm] = []
 
     // Spotify
-    @Published var spotifyUser = ""
-    @Published var spotifyBitRate = ""
+    var spotifyUser = ""
+    var spotifyBitRate = ""
     var isSpotifyMode: Bool {
         modeName.lowercased().contains("spotify")
     }
 
     // Browse
-    @Published var browseItems: [(key: Int, name: String, isFolder: Bool)] = []
-    @Published var browseTitle = ""
-    @Published var browseDepth = 0
-    @Published var isBrowseLoading = false
+    var browseItems: [BrowseItem] = []
+    var browseTitle = ""
+    var browseDepth = 0
+    var isBrowseLoading = false
 
-    // Internal
-    var isDraggingVolume = false
-    var popoverVisible = false {
+    /// Whether the menubar popover is open. Opening or closing it refreshes state and changes the poll rate.
+    var isPopoverPresented = false {
         didSet {
-            if popoverVisible != oldValue {
-                restartTimer()
-            }
+            guard isPopoverPresented != oldValue else { return }
+            Log("VM: Poll interval -> \(pollInterval) (popover \(isPopoverPresented ? "open" : "closed"))")
+            requestPoll()
         }
     }
 
-    private var isPolling = false
-    private var presetsLoaded = false
-    private var deviceInfoLoaded = false
-    private var pollTimer: Timer?
-    private var client: FSAPIClient
+    /// Picker selection that switches the radio's mode when set.
+    var selectedModeID: Int {
+        get { modeId }
+        set { Task { await setMode(newValue) } }
+    }
+
+    /// Picker selection that switches the radio's EQ preset when set.
+    var selectedEQPresetID: Int {
+        get { eqPresetId }
+        set { Task { await setEqPreset(newValue) } }
+    }
+
+    @ObservationIgnored var isDraggingVolume = false
+
+    @ObservationIgnored private var presetsLoaded = false
+    @ObservationIgnored private var deviceInfoLoaded = false
+    @ObservationIgnored private var pollRequested = false
+    @ObservationIgnored private var pollDelay: Task<Void, Never>?
+    @ObservationIgnored private var browseTask: Task<Void, Never>?
+    @ObservationIgnored private var client: FSAPIClient
+
+    private var pollInterval: Duration {
+        isPopoverPresented ? .seconds(4) : .seconds(60)
+    }
 
     init() {
         let ip = UserDefaults.standard.string(forKey: "radioBarIP") ?? "192.168.1.72"
@@ -87,33 +107,48 @@ final class RadioViewModel: ObservableObject {
         radioPin = pin
         client = FSAPIClient(pin: pin)
         Log("APP: Init (ip=\(ip))")
-        restartTimer()
-        Task { await poll() }
+        Task { await runPollLoop() }
     }
 
-    private func restartTimer() {
-        pollTimer?.invalidate()
-        let interval: TimeInterval = popoverVisible ? 4 : 60
-        Log("VM: Poll interval -> \(Int(interval))s (popover \(popoverVisible ? "open" : "closed"))")
-        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in await self.poll() }
+    // MARK: Polling
+
+    /// Runs every poll in sequence for the lifetime of the app, so polls never overlap.
+    private func runPollLoop() async {
+        while true {
+            pollRequested = false
+            await poll()
+            guard !pollRequested else { continue }
+
+            let delay = Task<Void, Never> { try? await Task.sleep(for: pollInterval) }
+            pollDelay = delay
+            await delay.value
+            pollDelay = nil
         }
     }
 
-    func poll() async {
-        guard !isPolling, !radioIP.isEmpty else { return }
-        isPolling = true
-        defer { isPolling = false }
+    /// Refreshes state now, or immediately after any poll already in flight.
+    func requestPoll() {
+        pollRequested = true
+        pollDelay?.cancel()
+    }
+
+    private func requestPoll(after delay: Duration) async {
+        try? await Task.sleep(for: delay)
+        requestPoll()
+    }
+
+    private func poll() async {
+        guard !radioIP.isEmpty else { return }
 
         let ip = radioIP
 
         // When popover is closed, only check power for the menubar icon
-        if !popoverVisible {
+        if !isPopoverPresented {
             let r = await client.get(ip, node: "netRemote.sys.power")
             if r.status == "FS_OK" {
                 let wasConnected = isConnected
-                isConnected = true; connectionError = nil
+                isConnected = true
+                connectionError = nil
                 power = r.value == "1"
                 if !wasConnected {
                     Log("VM: Connected to \(ip)")
@@ -122,7 +157,8 @@ final class RadioViewModel: ObservableObject {
                 if isConnected {
                     Log("VM: Lost connection to \(ip)")
                 }
-                isConnected = false; connectionError = "Cannot reach radio at \(ip)"
+                isConnected = false
+                connectionError = "Cannot reach radio at \(ip)"
             }
             return
         }
@@ -168,8 +204,7 @@ final class RadioViewModel: ObservableObject {
             eqPresetId = v
         }
 
-        let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
-        playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
+        playStatus = PlayStatus(fsapiValue: vals["netRemote.play.status"])
         let newTrack = vals["netRemote.play.info.name"] ?? ""
         if newTrack != trackName {
             Log("VM: Now playing: \(newTrack)")
@@ -198,7 +233,9 @@ final class RadioViewModel: ObservableObject {
         modeId = newModeId
         if modeChanged {
             Log("VM: Mode changed to \(newModeId)")
-            browseItems = []; browseDepth = 0; browseTitle = ""
+            browseItems = []
+            browseDepth = 0
+            browseTitle = ""
             presetsLoaded = false
         }
 
@@ -217,13 +254,13 @@ final class RadioViewModel: ObservableObject {
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
             if r.status == "FS_OK" {
-                modes = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "Mode \($0.key)") }
+                modes = r.items.map { RadioMode(id: $0.key, label: $0.fields["label"] ?? "Mode \($0.key)") }
             }
         }
         if eqPresets.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.eqPresets")
             if r.status == "FS_OK" {
-                eqPresets = r.items.map { (id: $0.key, label: $0.fields["label"] ?? "EQ \($0.key)") }
+                eqPresets = r.items.map { EQPreset(id: $0.key, label: $0.fields["label"] ?? "EQ \($0.key)") }
             }
         }
         modeName = modes.first { $0.id == modeId }?.label ?? "Mode \(modeId)"
@@ -232,7 +269,9 @@ final class RadioViewModel: ObservableObject {
         if power, !presetsLoaded {
             presetsLoaded = true
             let r = await client.list(ip, node: "netRemote.nav.presets")
-            presets = r.status == "FS_OK" ? r.items.map { (key: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") } : []
+            presets = r.status == "FS_OK"
+                ? r.items.map { RadioPreset(id: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") }
+                : []
         }
     }
 
@@ -245,8 +284,7 @@ final class RadioViewModel: ObservableObject {
 
     func togglePower() async {
         _ = await client.set(radioIP, node: "netRemote.sys.power", value: power ? "0" : "1")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+        await requestPoll(after: .milliseconds(500))
     }
 
     func setVolume(_ vol: Int) async {
@@ -270,39 +308,33 @@ final class RadioViewModel: ObservableObject {
     }
 
     func playPause() async {
-        _ = await client.set(radioIP, node: "netRemote.play.control", value: playStatus == "playing" ? "2" : "1")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await poll()
+        _ = await client.set(radioIP, node: "netRemote.play.control", value: playStatus == .playing ? "2" : "1")
+        await requestPoll(after: .milliseconds(300))
     }
 
     func stop() async {
         _ = await client.set(radioIP, node: "netRemote.play.control", value: "0")
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        await poll()
+        await requestPoll(after: .milliseconds(300))
     }
 
     func next() async {
         _ = await client.set(radioIP, node: "netRemote.play.control", value: "3")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+        await requestPoll(after: .milliseconds(500))
     }
 
     func prev() async {
         _ = await client.set(radioIP, node: "netRemote.play.control", value: "4")
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        await poll()
+        await requestPoll(after: .milliseconds(500))
     }
 
     func setMode(_ id: Int) async {
         _ = await client.set(radioIP, node: "netRemote.sys.mode", value: "\(id)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+        await requestPoll(after: .seconds(1))
     }
 
     func selectPreset(_ key: Int) async {
         _ = await client.set(radioIP, node: "netRemote.nav.action.selectPreset", value: "\(key)")
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await poll()
+        await requestPoll(after: .seconds(1))
     }
 
     private func fire(_ node: String, _ value: String) {
@@ -311,8 +343,6 @@ final class RadioViewModel: ObservableObject {
     }
 
     // MARK: Browse — stored Task avoids SwiftUI lifecycle cancellation
-
-    private var browseTask: Task<Void, Never>?
 
     func startBrowse() {
         browseTask?.cancel()
@@ -339,29 +369,39 @@ final class RadioViewModel: ObservableObject {
     }
 
     func browseSelect(_ key: Int) {
-        if let name = browseItems.first(where: { $0.key == key })?.name {
-            trackName = name; artist = ""; infoText = ""
+        if let name = browseItems.first(where: { $0.id == key })?.name {
+            trackName = name
+            artist = ""
+            infoText = ""
         }
         fire("netRemote.nav.action.selectItem", "\(key)")
     }
 
     private func fetchBrowseItems() async {
+        guard !Task.isCancelled else { return }
         let ip = radioIP
         isBrowseLoading = true
-        defer { isBrowseLoading = false }
+        // A cancelled fetch has been replaced by a newer one, which owns the loading state
+        defer {
+            if !Task.isCancelled {
+                isBrowseLoading = false
+            }
+        }
 
         // The radio's nav layer can take a moment to populate after enable/navigate.
         // Retry a few times if numItems is 0 or the list fetch fails.
         for attempt in 0 ..< 4 {
             if attempt > 0 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(for: .milliseconds(500))
             }
+            guard !Task.isCancelled else { return }
 
             let info = await client.getMultiple(ip, nodes: [
                 "netRemote.nav.depth",
                 "netRemote.nav.currentTitle",
                 "netRemote.nav.numItems",
             ])
+            guard !Task.isCancelled else { return }
             browseDepth = Int(info["netRemote.nav.depth"] ?? "0") ?? 0
             browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
@@ -369,14 +409,20 @@ final class RadioViewModel: ObservableObject {
             if numItems == 0, attempt < 3 {
                 continue
             }
-            guard numItems > 0 else { browseItems = []; return }
+            guard numItems > 0 else {
+                browseItems = []
+                return
+            }
 
             let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
+            guard !Task.isCancelled else { return }
             if r.status == "FS_OK", !r.items.isEmpty {
                 browseItems = r.items.map { item in
-                    (key: item.key,
-                     name: item.fields["name"] ?? "Item \(item.key)",
-                     isFolder: item.fields["type"] == "0")
+                    BrowseItem(
+                        id: item.key,
+                        name: item.fields["name"] ?? "Item \(item.key)",
+                        isFolder: item.fields["type"] == "0",
+                    )
                 }
                 return
             }
@@ -387,7 +433,7 @@ final class RadioViewModel: ObservableObject {
     func fetchAlarms() async {
         let r = await client.list(radioIP, node: "netRemote.sys.alarm.config")
         if r.status == "FS_OK" {
-            alarms = r.items.map { (key: $0.key, fields: $0.fields) }
+            alarms = r.items.map(RadioAlarm.init(item:))
         }
     }
 
@@ -396,7 +442,7 @@ final class RadioViewModel: ObservableObject {
         defer { isDiscovering = false }
         if let ip = await discoverRadio(timeout: 4) {
             radioIP = ip
-            await poll()
+            requestPoll()
         } else {
             connectionError = "No Frontier Silicon radio found on the network"
         }

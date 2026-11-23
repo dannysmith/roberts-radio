@@ -18,8 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct RadioBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var vm = RadioViewModel()
-    @State private var isMenuPresented = false
+    @State private var vm = RadioViewModel()
 
     var body: some Scene {
         MenuBarExtra {
@@ -36,7 +35,7 @@ struct RadioBarApp: App {
         } label: {
             Image(systemName: vm.isConnected && vm.power ? "radio.fill" : "radio")
         }
-        .menuBarExtraAccess(isPresented: $isMenuPresented)
+        .menuBarExtraAccess(isPresented: $vm.isPopoverPresented)
         .menuBarExtraStyle(.window)
     }
 }

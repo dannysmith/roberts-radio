@@ -86,9 +86,3 @@ A self-hosted Airable backend ([Radio-API](https://github.com/KIMB-technologies/
 - Spotify controls during real playback
 - The Presets panel with hidden empty slots and the used-slot count
 - Browsing a long station list
-
-## Before the next release
-
-- Bump the version in `scripts/build-app.sh`, which is hard-coded to 1.0. The latest release is v1.0.0.
-- Build with `scripts/build-app.sh --notarize` and upload `dist/RadioBar.zip`.
-- Mention in the release notes that it now requires macOS 27.

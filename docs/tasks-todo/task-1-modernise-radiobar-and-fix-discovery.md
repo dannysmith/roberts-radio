@@ -110,16 +110,18 @@ Discovery order, stopping at the first verified radio:
 
 Tasks:
 
-- [ ] Add a discovery service built on Network framework and structured concurrency, replacing the POSIX and GCD code.
-- [ ] Verify candidates in two steps: `/device` must return a valid `webfsapi` URL before the PIN is sent, then an FSAPI read must succeed.
-- [ ] Store the radio's ID after connecting.
-- [ ] Rediscover automatically when the connection drops and when the network path changes, without repeatedly scanning the subnet.
-- [ ] Only let automatic rediscovery connect to the saved radio ID, so a laptop on someone else's network never takes control of their radio. Manual Discover may select a new radio.
-- [ ] Add `NSLocalNetworkUsageDescription` and `NSBonjourServices` to the app bundle, then test both the `.app` and the `bin/radiobar-gui` binary.
-- [ ] Keep the settings IP field in sync with the active radio.
-- [ ] Make sure a discovery result always triggers a real refresh, even if a poll is in flight.
-- [ ] Show distinct states for no radio found, saved radio not responding, and wrong PIN. The not-responding state should suggest restarting the router if the radio is still playing.
-- [ ] Add focused Swift Testing coverage for FSAPI parsing, SSDP reply parsing and `/device` validation, using captured responses.
+- [x] Add a discovery service built on structured concurrency, using Network framework for Bonjour and path monitoring. SSDP stays on BSD sockets because Network framework can't receive unicast replies to a multicast send.
+- [x] Verify candidates in two steps: `/device` must return a valid `webfsapi` URL before the PIN is sent, then an FSAPI read must succeed.
+- [x] Store the radio's ID after connecting.
+- [x] Rediscover automatically when the connection drops and when the network path changes, without repeatedly scanning the subnet.
+- [x] Only let automatic rediscovery connect to the saved radio ID, so a laptop on someone else's network never takes control of their radio. Manual Discover may select a new radio.
+- [x] Add `NSLocalNetworkUsageDescription` and `NSBonjourServices` to the app bundle.
+- [x] Keep the settings IP field in sync with the active radio.
+- [x] Make sure a discovery result always triggers a real refresh, even if a poll is in flight.
+- [x] Show distinct states for no radio found, saved radio not responding, and wrong PIN. The not-responding state should suggest restarting the router if the radio is still playing.
+- [x] Add focused Swift Testing coverage for FSAPI parsing, SSDP reply parsing and `/device` validation, using captured responses.
+- [ ] Confirm in the real app: Discover from a wrong IP, reconnection after a Wi-Fi drop, and the wrong PIN message.
+- [ ] Confirm discovery works in both the signed `.app` and the `bin/radiobar-gui` binary.
 
 Done when Discover finds the radio from a wrong saved IP, reconnects after a network interruption, and never sends the PIN to a host that hasn't identified itself as FSAPI.
 

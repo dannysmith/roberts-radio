@@ -94,6 +94,14 @@ struct EQPreset: Identifiable, Equatable {
 struct RadioPreset: Identifiable, Equatable {
     let id: Int
     let name: String
+
+    /// The saved presets from a list of slots. Empty slots have a blank name.
+    static func saved(in slots: [FSAPIListParser.Item]) -> [RadioPreset] {
+        slots.compactMap { slot in
+            guard let name = slot.fields["name"], !name.isEmpty else { return nil }
+            return RadioPreset(id: slot.key, name: name)
+        }
+    }
 }
 
 struct BrowseItem: Identifiable, Equatable {

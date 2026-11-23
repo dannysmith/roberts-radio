@@ -43,6 +43,21 @@ struct PlayCapsTests {
     }
 }
 
+struct PresetSlotTests {
+    @Test func `keeps saved presets with their original slot numbers`() {
+        let slots = [
+            FSAPIListParser.Item(key: 0, fields: ["name": "BBC Radio 4"]),
+            FSAPIListParser.Item(key: 1, fields: ["name": ""]),
+            FSAPIListParser.Item(key: 2, fields: [:]),
+            FSAPIListParser.Item(key: 3, fields: ["name": "Jazz FM"]),
+        ]
+        #expect(RadioPreset.saved(in: slots) == [
+            RadioPreset(id: 0, name: "BBC Radio 4"),
+            RadioPreset(id: 3, name: "Jazz FM"),
+        ])
+    }
+}
+
 struct ListPagingTests {
     @Test func `detects the end of a list`() {
         let xml = """

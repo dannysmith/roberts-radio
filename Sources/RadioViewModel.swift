@@ -44,6 +44,8 @@ final class RadioViewModel {
     // Lists
     var modes: [RadioMode] = []
     var presets: [RadioPreset] = []
+    /// How many preset slots the current mode has, including empty ones.
+    var presetSlotCount = 0
 
     // EQ
     var eqPresets: [EQPreset] = []
@@ -281,12 +283,26 @@ final class RadioViewModel {
         // Fetch presets on connect and mode change (not every poll)
         if power, !presetsLoaded {
             presetsLoaded = true
-            let r = await client.list(ip, node: "netRemote.nav.presets")
-            guard ip == radioIP else { return }
-            presets = r.status == "FS_OK"
-                ? r.items.map { RadioPreset(id: $0.key, name: $0.fields["name"] ?? "Preset \($0.key)") }
-                : []
+            await loadPresets(from: ip)
         }
+    }
+
+    /// Loads the current mode's presets. The radio turns navigation off on every mode change
+    /// and blocks the preset list until it's back on.
+    private func loadPresets(from ip: String) async {
+        var result = await client.list(ip, node: "netRemote.nav.presets")
+        if result.status == "FS_NODE_BLOCKED" {
+            await send("netRemote.nav.state", "1")
+            for _ in 0 ..< 4 where result.status == "FS_NODE_BLOCKED" {
+                try? await Task.sleep(for: .milliseconds(500))
+                result = await client.list(ip, node: "netRemote.nav.presets")
+            }
+        }
+        guard ip == radioIP else { return }
+
+        let slots = result.status == "FS_OK" ? result.items : []
+        presetSlotCount = slots.count
+        presets = RadioPreset.saved(in: slots)
     }
 
     // MARK: Connection

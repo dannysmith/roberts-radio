@@ -70,20 +70,28 @@ private struct PresetsPanel: View {
     let vm: RadioViewModel
 
     var body: some View {
-        if vm.presets.isEmpty {
-            Text("No presets for this mode")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(vm.presets) { preset in
-                        PresetRow(number: preset.id + 1, name: preset.name) {
-                            Task { await vm.selectPreset(preset.id) }
+        VStack(alignment: .leading, spacing: 6) {
+            if vm.presets.isEmpty {
+                Text(vm.presetSlotCount > 0 ? "No presets saved" : "No presets for this mode")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(vm.presets) { preset in
+                            PresetRow(number: preset.id + 1, name: preset.name) {
+                                Task { await vm.selectPreset(preset.id) }
+                            }
                         }
                     }
                 }
+            }
+            if vm.presetSlotCount > 0 {
+                Text("\(vm.presets.count) of \(vm.presetSlotCount) slots used")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
             }
         }
     }

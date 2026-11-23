@@ -28,7 +28,7 @@ Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.
 
 Download `RadioBar.zip` from [Releases](../../releases), unzip, and drag `RadioBar.app` to your Applications folder. The app is signed and notarized, so it will run without Gatekeeper warnings.
 
-Requires macOS 13+.
+Requires macOS 27+.
 
 ## Build from Source
 

@@ -1005,7 +1005,7 @@ struct RadioMenuView: View {
             Text("Mode").font(.caption).foregroundColor(.secondary)
             Picker("", selection: Binding(
                 get: { vm.modeId },
-                set: { id in Task { await vm.setMode(id) } }
+                set: { id in Task { await vm.setMode(id) } },
             )) {
                 ForEach(vm.modes, id: \.id) { mode in
                     Text(mode.label).tag(mode.id)
@@ -1019,7 +1019,7 @@ struct RadioMenuView: View {
                 Text("EQ").font(.caption).foregroundColor(.secondary)
                 Picker("", selection: Binding(
                     get: { vm.eqPresetId },
-                    set: { id in Task { await vm.setEqPreset(id) } }
+                    set: { id in Task { await vm.setEqPreset(id) } },
                 )) {
                     ForEach(vm.eqPresets, id: \.id) { eq in
                         Text(eq.label).tag(eq.id)

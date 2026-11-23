@@ -120,8 +120,9 @@ Tasks:
 - [x] Make sure a discovery result always triggers a real refresh, even if a poll is in flight.
 - [x] Show distinct states for no radio found, saved radio not responding, and wrong PIN. The not-responding state should suggest restarting the router if the radio is still playing.
 - [x] Add focused Swift Testing coverage for FSAPI parsing, SSDP reply parsing and `/device` validation, using captured responses.
-- [ ] Confirm in the real app: Discover from a wrong IP, reconnection after a Wi-Fi drop, and the wrong PIN message.
-- [ ] Confirm discovery works in both the signed `.app` and the `bin/radiobar-gui` binary.
+- [x] Confirm in the real app: Discover from a wrong IP and the wrong PIN message.
+- [x] Confirm discovery works in the signed `.app`.
+- [ ] Confirm reconnection after a Wi-Fi drop. Danny will test this later.
 
 Done when Discover finds the radio from a wrong saved IP, reconnects after a network interruption, and never sends the PIN to a host that hasn't identified itself as FSAPI.
 

@@ -40,10 +40,27 @@ actor FSAPIClient {
         return FSAPIGetParser.parse(data).status
     }
 
-    func list(_ ip: String, node: String, maxItems: Int = 100) async -> (status: String, items: [FSAPIListParser.Item]) {
-        guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/-1?pin=\(pin)&maxItems=\(maxItems)"),
-              let data = await fetch(url) else { return ("FS_REQUEST_FAILED", []) }
-        return FSAPIListParser.parse(data)
+    /// Reads a list page by page until it ends or reaches `limit` items.
+    /// Small pages are used because larger requests are more likely to be blocked by the radio.
+    func list(_ ip: String, node: String, limit: Int = 1000) async -> (status: String, items: [FSAPIListParser.Item]) {
+        let pageSize = 50
+        var items: [FSAPIListParser.Item] = []
+        var start = -1
+
+        while items.count < limit {
+            let count = min(pageSize, limit - items.count)
+            guard let url = URL(string: "http://\(ip)/fsapi/LIST_GET_NEXT/\(node)/\(start)?pin=\(pin)&maxItems=\(count)"),
+                  let data = await fetch(url)
+            else { return (items.isEmpty ? "FS_REQUEST_FAILED" : "FS_OK", items) }
+
+            let page = FSAPIListParser.parse(data)
+            guard page.status == "FS_OK" else { return (items.isEmpty ? page.status : "FS_OK", items) }
+
+            items += page.items
+            guard !page.reachedEnd, let last = page.items.last else { break }
+            start = last.key
+        }
+        return ("FS_OK", items)
     }
 
     /// GET_MULTIPLE, chunked to 5 nodes per request (radio rejects long URLs)

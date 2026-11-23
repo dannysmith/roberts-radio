@@ -111,6 +111,7 @@ private struct PlaybackProgress: View {
                     let fraction = max(0, min(1, location.x / geo.size.width))
                     vm.seekTo(Int(fraction * Double(vm.duration)))
                 }
+                .allowsHitTesting(vm.playCaps.contains(.seek))
             }
             .frame(height: 8) // slightly taller hit target than the visual 3px
             timeLabel(vm.duration)

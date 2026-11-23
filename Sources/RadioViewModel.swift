@@ -33,6 +33,7 @@ final class RadioViewModel {
 
     // Now playing
     var playStatus = PlayStatus.stopped
+    var playCaps = PlayCaps.all
     var trackName = ""
     var artist = ""
     var infoText = ""
@@ -56,6 +57,10 @@ final class RadioViewModel {
     var spotifyBitRate = ""
     var isSpotifyMode: Bool {
         modeName.lowercased().contains("spotify")
+    }
+
+    var primaryAction: PrimaryPlaybackAction? {
+        PrimaryPlaybackAction(status: playStatus, caps: playCaps)
     }
 
     // Browse
@@ -103,6 +108,8 @@ final class RadioViewModel {
     @ObservationIgnored private var isRadioVerified = false
     /// Whether a failed verification may search the network, limiting searches to one per lost connection.
     @ObservationIgnored private var needsNetworkSearch = true
+
+    private static let maxBrowseAttempts = 15
 
     private var pollInterval: Duration {
         isPopoverPresented ? .seconds(4) : .seconds(60)
@@ -176,6 +183,7 @@ final class RadioViewModel {
             "netRemote.sys.audio.mute",
             "netRemote.sys.audio.eqPreset",
             "netRemote.play.status",
+            "netRemote.play.caps",
             "netRemote.play.info.name",
             "netRemote.play.info.text",
             "netRemote.play.info.artist",
@@ -203,6 +211,10 @@ final class RadioViewModel {
         }
 
         playStatus = PlayStatus(fsapiValue: vals["netRemote.play.status"])
+        // The radio briefly drops capabilities while buffering, so keep the last stable set
+        if playStatus != .buffering {
+            playCaps = vals["netRemote.play.caps"].flatMap(Int.init).map(PlayCaps.init(rawValue:)) ?? .all
+        }
         let newTrack = vals["netRemote.play.info.name"] ?? ""
         if newTrack != trackName {
             Log("VM: Now playing: \(newTrack)")
@@ -433,6 +445,7 @@ final class RadioViewModel {
     }
 
     func seekTo(_ ms: Int) {
+        guard playCaps.contains(.seek) else { return }
         let clamped = max(0, min(ms, duration))
         Task { await send("netRemote.play.position", "\(clamped)") }
     }
@@ -442,8 +455,13 @@ final class RadioViewModel {
         eqPresetId = id
     }
 
-    func playPause() async {
-        await send("netRemote.play.control", playStatus == .playing ? "2" : "1")
+    func performPrimaryAction() async {
+        switch primaryAction {
+        case .play: await send("netRemote.play.control", "1")
+        case .pause: await send("netRemote.play.control", "2")
+        case .stop: await send("netRemote.play.control", "0")
+        case nil: return
+        }
         await requestPoll(after: .milliseconds(300))
     }
 
@@ -519,8 +537,8 @@ final class RadioViewModel {
         }
 
         // The radio's nav layer can take a moment to populate after enable/navigate.
-        // Retry a few times if numItems is 0 or the list fetch fails.
-        for attempt in 0 ..< 4 {
+        // Retry if numItems is 0, or while the list is blocked or still contains loading rows.
+        for attempt in 0 ..< Self.maxBrowseAttempts {
             if attempt > 0 {
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -544,9 +562,9 @@ final class RadioViewModel {
                 return
             }
 
-            let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
+            let r = await client.list(ip, node: "netRemote.nav.list")
             guard !Task.isCancelled else { return }
-            if r.status == "FS_OK", !r.items.isEmpty {
+            if r.status == "FS_OK", !r.items.isEmpty, !r.items.contains(where: \.isLoadingPlaceholder) {
                 browseItems = r.items.map { item in
                     BrowseItem(
                         id: item.key,

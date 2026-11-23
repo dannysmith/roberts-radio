@@ -6,10 +6,59 @@ enum PlayStatus: Equatable {
 
     init(fsapiValue: String?) {
         switch fsapiValue {
-        case "1": self = .buffering
+        case "1", "4": self = .buffering
         case "2": self = .playing
         case "3": self = .paused
         default: self = .stopped
+        }
+    }
+}
+
+/// Playback commands the current source supports, from the `netRemote.play.caps` bitmask.
+struct PlayCaps: OptionSet, Equatable {
+    let rawValue: Int
+
+    static let pause = PlayCaps(rawValue: 1 << 0)
+    static let stop = PlayCaps(rawValue: 1 << 1)
+    static let skipNext = PlayCaps(rawValue: 1 << 2)
+    static let skipPrevious = PlayCaps(rawValue: 1 << 3)
+    static let fastForward = PlayCaps(rawValue: 1 << 4)
+    static let rewind = PlayCaps(rawValue: 1 << 5)
+    static let seek = PlayCaps(rawValue: 1 << 8)
+    static let skipForward = PlayCaps(rawValue: 1 << 14)
+    static let skipBackward = PlayCaps(rawValue: 1 << 15)
+
+    /// Used when the radio doesn't report capabilities, leaving every control available.
+    static let all: PlayCaps = [
+        .pause, .stop, .skipNext, .skipPrevious, .fastForward, .rewind, .seek, .skipForward, .skipBackward,
+    ]
+
+    var canSkipNext: Bool {
+        !isDisjoint(with: [.skipNext, .fastForward, .skipForward])
+    }
+
+    var canSkipPrevious: Bool {
+        !isDisjoint(with: [.skipPrevious, .rewind, .skipBackward])
+    }
+}
+
+/// What the main playback button does for the current status and capabilities.
+enum PrimaryPlaybackAction: Equatable {
+    case play, pause, stop
+
+    /// Live streams can't pause, so the button stops them instead. Nil means no action is available.
+    init?(status: PlayStatus, caps: PlayCaps) {
+        switch status {
+        case .paused, .stopped:
+            self = .play
+        case .playing, .buffering:
+            if caps.contains(.pause) {
+                self = .pause
+            } else if caps.contains(.stop) {
+                self = .stop
+            } else {
+                return nil
+            }
         }
     }
 }

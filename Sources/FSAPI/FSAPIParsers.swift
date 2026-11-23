@@ -80,22 +80,31 @@ final class FSAPIDeviceParser: NSObject, XMLParserDelegate {
 
 /// Parses LIST_GET_NEXT: items with key attribute and named fields
 final class FSAPIListParser: NSObject, XMLParserDelegate {
-    struct Item { let key: Int; var fields: [String: String] }
+    struct Item {
+        let key: Int
+        var fields: [String: String]
+
+        /// Navigation lists use type 255 for rows that are still loading from the cloud.
+        var isLoadingPlaceholder: Bool {
+            fields["type"] == "255"
+        }
+    }
 
     private(set) var status = ""
     private(set) var items: [Item] = []
+    private var reachedEnd = false
     private var path: [String] = []
     private var text = ""
     private var itemKey: Int?
     private var itemFields: [String: String] = [:]
     private var fieldName: String?
 
-    static func parse(_ data: Data) -> (status: String, items: [Item]) {
+    static func parse(_ data: Data) -> (status: String, items: [Item], reachedEnd: Bool) {
         let handler = FSAPIListParser()
         let parser = XMLParser(data: data)
         parser.delegate = handler
         parser.parse()
-        return (handler.status, handler.items)
+        return (handler.status, handler.items, handler.reachedEnd)
     }
 
     func parser(_: XMLParser, didStartElement name: String,
@@ -108,6 +117,8 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
             itemFields = [:]
         } else if name == "field" {
             fieldName = attributes["name"]
+        } else if name == "listend" {
+            reachedEnd = true
         }
     }
 

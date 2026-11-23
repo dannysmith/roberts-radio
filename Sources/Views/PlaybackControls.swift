@@ -12,24 +12,30 @@ struct TransportControls: View {
                 Image(systemName: "backward.fill").font(.system(size: 14))
             }
             .buttonStyle(.borderless)
+            .disabled(!vm.playCaps.canSkipPrevious)
             .help("Previous")
 
             Button {
-                Task { await vm.playPause() }
+                Task { await vm.performPrimaryAction() }
             } label: {
-                Image(systemName: vm.playStatus == .playing ? "pause.fill" : "play.fill")
+                Image(systemName: primaryIcon)
                     .font(.system(size: 20))
             }
             .buttonStyle(.borderless)
-            .help(vm.playStatus == .playing ? "Pause" : "Play")
+            .disabled(vm.primaryAction == nil)
+            .help(primaryHelp)
 
-            Button {
-                Task { await vm.stop() }
-            } label: {
-                Image(systemName: "stop.fill").font(.system(size: 14))
+            // The main button already stops streams that can't pause
+            if vm.primaryAction != .stop {
+                Button {
+                    Task { await vm.stop() }
+                } label: {
+                    Image(systemName: "stop.fill").font(.system(size: 14))
+                }
+                .buttonStyle(.borderless)
+                .disabled(vm.playStatus == .stopped || !vm.playCaps.contains(.stop))
+                .help("Stop")
             }
-            .buttonStyle(.borderless)
-            .help("Stop")
 
             Button {
                 Task { await vm.next() }
@@ -37,10 +43,27 @@ struct TransportControls: View {
                 Image(systemName: "forward.fill").font(.system(size: 14))
             }
             .buttonStyle(.borderless)
+            .disabled(!vm.playCaps.canSkipNext)
             .help("Next")
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+
+    private var primaryIcon: String {
+        switch vm.primaryAction {
+        case .play: "play.fill"
+        case .stop: "stop.fill"
+        case .pause, nil: "pause.fill"
+        }
+    }
+
+    private var primaryHelp: String {
+        switch vm.primaryAction {
+        case .play: "Play"
+        case .stop: "Stop"
+        case .pause, nil: "Pause"
+        }
     }
 }
 

@@ -76,7 +76,7 @@ private struct DisconnectedView: View {
             Image(systemName: "radio")
                 .font(.system(size: 28))
                 .foregroundStyle(.secondary)
-            Text(vm.connectionError ?? "Not connected")
+            Text(vm.connectionProblem?.message ?? "Not connected")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

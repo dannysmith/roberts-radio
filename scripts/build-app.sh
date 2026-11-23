@@ -67,6 +67,12 @@ cat > "$CONTENTS/Info.plist" << 'PLIST'
     <string>27.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>RadioBar uses your local network to find and control your radio.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_undok._tcp</string>
+    </array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>

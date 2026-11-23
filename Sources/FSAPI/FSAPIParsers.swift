@@ -41,6 +41,43 @@ final class FSAPIGetParser: NSObject, XMLParserDelegate {
     }
 }
 
+/// Parses the `/device` description: <netRemote><webfsapi>http://host:80/fsapi</webfsapi></netRemote>
+final class FSAPIDeviceParser: NSObject, XMLParserDelegate {
+    private var path: [String] = []
+    private var text = ""
+    private var webfsapi: String?
+
+    /// Returns the device's FSAPI URL, or nil if the response isn't from an FSAPI device.
+    static func fsapiURL(from data: Data) -> URL? {
+        let handler = FSAPIDeviceParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = handler
+        guard parser.parse(), let value = handler.webfsapi, let url = URL(string: value),
+              url.scheme == "http" || url.scheme == "https", url.path == "/fsapi"
+        else { return nil }
+        return url
+    }
+
+    func parser(_: XMLParser, didStartElement name: String,
+                namespaceURI _: String?, qualifiedName _: String?,
+                attributes _: [String: String] = [:]) {
+        path.append(name)
+        text = ""
+    }
+
+    func parser(_: XMLParser, foundCharacters string: String) {
+        text += string
+    }
+
+    func parser(_: XMLParser, didEndElement _: String,
+                namespaceURI _: String?, qualifiedName _: String?) {
+        if path == ["netRemote", "webfsapi"] {
+            webfsapi = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        path.removeLast()
+    }
+}
+
 /// Parses LIST_GET_NEXT: items with key attribute and named fields
 final class FSAPIListParser: NSObject, XMLParserDelegate {
     struct Item { let key: Int; var fields: [String: String] }

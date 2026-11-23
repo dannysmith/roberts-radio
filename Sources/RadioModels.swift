@@ -14,6 +14,24 @@ enum PlayStatus: Equatable {
     }
 }
 
+/// Why the app isn't connected to a radio.
+enum ConnectionProblem: Equatable {
+    case radioNotResponding(host: String)
+    case wrongPIN
+    case noRadioFound
+
+    var message: String {
+        switch self {
+        case let .radioNotResponding(host):
+            "Can't reach your radio at \(host). If it's still playing, try restarting your router."
+        case .wrongPIN:
+            "The radio rejected this PIN."
+        case .noRadioFound:
+            "No radio found on this network."
+        }
+    }
+}
+
 struct RadioMode: Identifiable, Equatable {
     let id: Int
     let label: String

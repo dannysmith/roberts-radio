@@ -12,8 +12,8 @@ struct SettingsFields: View {
                 TextField("IP address", text: $ipField)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
-                    .onSubmit(applyIP)
-                Button("Set", action: applyIP)
+                    .onSubmit { vm.connect(to: ipField) }
+                Button("Set") { vm.connect(to: ipField) }
                     .controlSize(.small)
             }
             HStack(spacing: 4) {
@@ -22,10 +22,7 @@ struct SettingsFields: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(width: 60)
-                    .onSubmit {
-                        vm.updatePin(pinField)
-                        vm.requestPoll()
-                    }
+                    .onSubmit { vm.updatePin(pinField) }
                 Spacer()
                 Button {
                     Task { await vm.discover() }
@@ -45,11 +42,9 @@ struct SettingsFields: View {
             ipField = vm.radioIP
             pinField = vm.radioPin
         }
-    }
-
-    private func applyIP() {
-        vm.radioIP = ipField
-        vm.requestPoll()
+        .onChange(of: vm.radioIP) {
+            ipField = vm.radioIP
+        }
     }
 }
 

@@ -12,16 +12,16 @@ Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.
 ## Features
 
 - Now playing: track name, artist, artwork, progress
-- Playback controls: play/pause, stop, next, previous
+- Playback controls that follow what the current source supports
 - Volume slider with mute
 - Mode switching (Internet Radio, Podcasts, DAB, FM, Spotify, etc.)
 - EQ presets
 - Preset selection per mode
 - Browse stations and podcasts with live filter
-- Seek on podcasts and Spotify (click the progress bar)
+- Seek where the source supports it (click the progress bar)
 - Spotify Connect account info
 - Alarm display
-- Auto-discover the radio on your network (SSDP)
+- Finds the radio on your network and reconnects automatically
 - Configurable IP and PIN
 
 ## Install
@@ -32,13 +32,13 @@ Requires macOS 27+.
 
 ## Build from Source
 
-Requires Xcode Command Line Tools (`xcode-select --install`).
+Requires macOS 27 and Xcode Command Line Tools with Swift 6.4 (`xcode-select --install`).
 
 ```bash
 bin/radiobar-gui
 ```
 
-This compiles the app on first run (or when the source changes) and launches it. The radio icon appears in your menubar.
+This compiles the app on first run (or when the source changes) and launches it. The radio icon appears in your menubar. Run the tests with `swift test`.
 
 **Flags:**
 - `--dock` -- also show a dock icon (useful on small screens where the menubar is full)
@@ -73,6 +73,10 @@ By default, the app connects to `192.168.1.72` with PIN `1234`. You can change b
 
 The CLI uses environment variables: `RADIO_IP` and `RADIO_PIN`.
 
+## Troubleshooting
+
+If the radio is playing but the app can't reach it, open its IP address in a browser on the same Mac. If that fails too, restart the radio, then your router. A router can stop passing traffic between Wi-Fi devices while each one still reaches the internet.
+
 ## How It Works
 
-The radio runs a Frontier Smart (formerly Frontier Silicon) platform with an HTTP API called FSAPI. The app polls the radio every few seconds for status, and sends commands when you interact with the UI. See [docs/fsapi-reference.md](docs/fsapi-reference.md) for protocol details.
+The radio runs a Frontier Smart (formerly Frontier Silicon) platform with an HTTP API called FSAPI. The app polls the radio every few seconds while its popover is open and once a minute while it's closed, and sends commands when you interact with the UI. See [docs/fsapi-reference.md](docs/fsapi-reference.md) for protocol details.

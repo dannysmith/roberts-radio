@@ -20,10 +20,10 @@ Research into community-built tools, libraries, and projects that interact with 
 ## 1. Python Libraries
 
 ### afsapi (Async Frontier Silicon API) -- THE MAIN ONE
-- **Repo:** https://github.com/zhelev/python-afsapi
+- **Repo:** https://github.com/wlcrs/python-afsapi (moved from `zhelev/python-afsapi`)
 - **PyPI:** https://pypi.org/project/afsapi/
 - **Language:** Python (async/aiohttp)
-- **Status:** This is the library used by **Home Assistant's official integration**. Latest release 0.2.8 (Dec 2022). Licensed Apache 2.0.
+- **Status:** This is the library used by **Home Assistant's official integration**. Actively developed, with 1.0.3 released in October 2026. Licensed Apache 2.0.
 - **Features:** Power on/off, friendly name, modes, equalisers, presets, sleep timer, volume, mute, play info. All async.
 - **Install:** `pip install afsapi`
 
@@ -64,7 +64,7 @@ Research into community-built tools, libraries, and projects that interact with 
 ### Home Assistant -- Official Integration
 - **Docs:** https://www.home-assistant.io/integrations/frontier_silicon/
 - **Status:** Built into Home Assistant core. Uses the `afsapi` Python library.
-- **Features:** Power, volume, mute, source selection, presets. Supports auto-discovery.
+- **Features:** Power, volume, mute, source selection, presets, seek, repeat and shuffle. Discovers radios with the SSDP `undok` and `invalid` targets.
 - **Limitations:** Polls every 30 seconds. Can conflict with UNDOK app on older devices (both create sessions).
 - **Setup:** Default PIN 1234. Some devices need port 2244. Check `http://<host>:<port>/device`
 
@@ -126,6 +126,11 @@ Research into community-built tools, libraries, and projects that interact with 
 - **Language:** JavaScript (browser-based)
 - **Status:** Proof of concept. Run index.html in a browser to control the radio.
 
+### Muga
+- **Repo:** https://github.com/calvellido/muga
+- **Language:** TypeScript (web controller, MIT)
+- **Status:** Active in late 2026. Useful protocol decision records, a node catalog and a simulator.
+
 ---
 
 ## 4. PHP Libraries
@@ -179,6 +184,14 @@ Research into community-built tools, libraries, and projects that interact with 
 - **Language:** POSIX shell
 - **Status:** Early alpha. Proof of concept for controlling Frontier Silicon Jupiter/Venice 6.5 radios from the command line.
 
+### Swift -- fsapi-radio-controller
+- **Repo:** https://github.com/pandawidkur/fsapi-radio-controller
+- **Status:** Active macOS menu bar app (MIT) with schedules, playlists and planned listening.
+
+### Android -- RadioPult
+- **Repo:** https://github.com/CSchoch/RadioPult
+- **Status:** Active Android remote (GPL-3.0) and UNDOK alternative.
+
 ---
 
 ## 7. Backend Replacements (Self-Hosted Station Lists)
@@ -189,7 +202,7 @@ These projects replace the cloud backend that serves station lists to the radio,
 - **Repo:** https://github.com/KIMB-technologies/Radio-API
 - **Docker:** https://hub.docker.com/r/kimbtechnologies/radio_api
 - **Language:** PHP
-- **Status:** Actively maintained. Docker support.
+- **Status:** Actively maintained. Docker support. Version 3.0.0 (June 2026) adds the newer Airable JSON API, but it's untested on Venice X.
 - **Features:**
   - Hosts custom internet radio stations and podcasts
   - Uses RadioBrowser for station discovery
@@ -234,6 +247,10 @@ These projects replace the cloud backend that serves station lists to the radio,
 ### MatrixEditor/frontier-silicon-firmwares (Updated fork)
 - **Repo:** https://github.com/MatrixEditor/frontier-silicon-firmwares
 - **Status:** Contains 35+ more firmware binaries than the original cweiske repo
+
+### Security advisory: CVE-2026-94252
+- **Advisory:** https://www.cryptron.ch/en/blog-detail/frontier-silicon-fs2340-xss-security-advisory.html
+- **Summary:** Reported as an unpatched, unauthenticated XSS in the FS2340 web UI through the Friendly Name and Preset fields, tested on firmware IR4.9. Whether V4.6.18 is affected is unconfirmed. Don't expose the radio's port 80 beyond the LAN.
 
 ---
 

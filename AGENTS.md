@@ -8,7 +8,7 @@ The Roberts Revival iStream 3L runs on the **Frontier Smart** platform (Venice X
 
 - **10 modes:** Internet Radio, Podcasts, Deezer, Amazon Music, Spotify, USB, DAB, FM, Bluetooth, Aux In
 - **Default IP:** `192.168.1.72`, **PIN:** `1234`
-- **SSDP discoverable** via `urn:schemas-frontier-silicon-com:fs_reference:fsapi:1`
+- **Discoverable** via Bonjour (`_undok._tcp`), SSDP (`urn:schemas-frontier-silicon-com:undok:fsapi:1`) and `GET /device`
 - No official API docs -- everything is community reverse-engineered
 
 See `docs/fsapi-reference.md` for the full protocol and node reference.
@@ -16,10 +16,20 @@ See `docs/fsapi-reference.md` for the full protocol and node reference.
 ## Project Structure
 
 ```
-RadioBar.swift          # SwiftUI menubar app (single-file, compiles with swiftc)
+Sources/
+  RadioBarApp.swift     # App entry point
+  RadioViewModel.swift  # Radio state, polling, connection and commands
+  RadioModels.swift     # Typed models for playback, presets, browsing and alarms
+  Log.swift             # Debug logging
+  FSAPI/                # HTTP client and XML parsers
+  Discovery/            # Bonjour, SSDP, subnet scan and radio verification
+  Views/                # SwiftUI popover views
+Tests/RadioBarTests/    # Swift Testing coverage for parsing and playback rules
 bin/
   radiobar-gui          # Build & run script for RadioBar
   radio                 # Bash CLI tool for FSAPI (requires curl/xq/jq)
+scripts/
+  build-app.sh          # Builds and signs the .app bundle
 docs/
   fsapi-reference.md    # FSAPI protocol spec, node tables, device-specific info
   community-projects.md # Community tools, libraries, self-hosted backends
@@ -28,22 +38,22 @@ docs/
 
 ## RadioBar (SwiftUI Menubar App)
 
-Single-file SwiftUI app for macOS. Build and run without Xcode:
+SwiftUI app for macOS 27+, using Swift 6. Build and run without Xcode:
 
 ```bash
 bin/radiobar-gui [--dock] [--debug]
 ```
 
 **Features:**
-- Now-playing display with artwork, progress bar (clickable to seek on podcasts/Spotify)
-- Playback controls (play/pause, stop, next, prev)
+- Now-playing display with artwork, progress bar (clickable where the source supports seeking)
+- Playback controls that follow the source's capabilities
 - Volume slider with mute
 - Mode switching and EQ preset picker
-- Preset selection (per-mode)
-- Station/podcast browsing via nav tree with search
+- Preset selection (per-mode), with a count of used slots
+- Station/podcast browsing via nav tree with a client-side filter
 - Spotify Connect info (account, bitrate)
 - Alarm display (collapsible)
-- SSDP auto-discovery of the radio on the local network
+- Radio discovery, with automatic reconnection to the saved radio
 - Configurable IP and PIN
 
 **Flags:**
@@ -51,9 +61,13 @@ bin/radiobar-gui [--dock] [--debug]
 - `--debug` -- print timestamped FSAPI request logs and state changes to stderr
 
 **Technical notes:**
-- Polls the radio every 4 seconds via GET_MULTIPLE (chunked to 5 nodes per request)
+- One async loop runs every poll in sequence: every 4 seconds with the popover open, every 60 seconds with it closed
+- Full polls use GET_MULTIPLE (chunked to 5 nodes per request)
 - XML responses parsed with Foundation's XMLParser (not regex)
-- SSDP discovery uses POSIX UDP sockets
+- Discovery tries the saved IP, then Bonjour and SSDP, then a subnet scan of `/device`
+- The PIN is only sent to a host that has identified itself as FSAPI
+- Automatic reconnection only accepts the saved radio ID. Manual Discover can select a new radio
+- SSDP uses BSD sockets because Network framework can't receive unicast replies to a multicast send
 - Actions are fire-and-forget: UI updates optimistically, the poll syncs actual state
 - Built with Swift Package Manager (`swift build -c release`)
 
@@ -64,9 +78,10 @@ scripts/build-app.sh    # outputs dist/RadioBar.app
 
 **After editing Swift code, run:**
 ```bash
-swiftformat Sources/        # auto-fix formatting
-swiftlint lint Sources/     # check for issues (should be 0 violations)
-swift build -c release      # verify it compiles
+swiftformat Sources/ Tests/     # auto-fix formatting
+swiftlint lint Sources/ Tests/  # check for issues (should be 0 violations)
+swift build -c release          # verify it compiles
+swift test                      # run the tests
 ```
 
 ## The `radio` CLI Tool
@@ -90,10 +105,11 @@ Set `RADIO_IP` and `RADIO_PIN` env vars to override defaults.
 
 ## Key Technical Details
 
-- **Presets are per-mode:** 40 slots for Internet Radio/Podcasts, 10 for DAB/FM. Cannot create presets from arbitrary URLs.
-- **Navigation is stateful:** must enable (`nav.state=1`) before browsing. Each level fetches from Airable's cloud.
+- **Presets are per-mode:** slot counts are in `docs/fsapi-reference.md`. Cannot create presets from arbitrary URLs.
+- **Navigation is stateful:** must enable (`nav.state=1`) before browsing or reading presets. The radio turns it off on every mode change, and each level fetches from Airable's cloud.
+- **Capabilities vary by mode:** live Internet Radio can stop but not pause. See `docs/fsapi-reference.md`.
 - **No SSL cert verification:** the radio doesn't verify HTTPS certs to Airable, enabling community self-hosted backends via DNS redirection.
-- **One session at a time:** if UNDOK is connected, it may conflict with other clients.
+- **One session at a time:** RadioBar and the CLI send the PIN per request and don't create sessions, so they don't take over from UNDOK.
 
 ## Future Possibilities
 
@@ -105,6 +121,6 @@ Set `RADIO_IP` and `RADIO_PIN` env vars to override defaults.
 
 - [fsapi-tools](https://github.com/MatrixEditor/fsapi-tools) -- most comprehensive community FSAPI project
 - [flammy/fsapi](https://github.com/flammy/fsapi/blob/master/FSAPI.md) -- protocol documentation
-- [afsapi](https://github.com/zhelev/python-afsapi) -- async Python library (powers Home Assistant)
+- [afsapi](https://github.com/wlcrs/python-afsapi) -- async Python library (powers Home Assistant)
 - [fairable](https://github.com/Half-Shot/fairable) -- self-hosted Airable-compatible backend
 - [airable.fm](https://airable.fm) -- manage favourites/podcasts via web portal

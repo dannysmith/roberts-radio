@@ -134,11 +134,13 @@ These tests change playback, so check with Danny before running them.
 
 - [x] Test resuming from stopped on this radio. `play.control=1` resumes a stopped Internet Radio stream, so no workaround is needed. `play.control=2` returns `FS_FAIL` on a live stream.
 - [x] Decode `netRemote.play.caps` using afsapi as a reference. Radio 4 in Internet Radio mode reports `2050` (Stop and Add Preset), dropping to `2048` while buffering.
-- [ ] Confirm the decoded capabilities against this radio in the other modes, especially Next and Previous on DAB and FM.
+- [x] Confirm the decoded capabilities against this radio in the other modes, including Next and Previous on DAB and FM, and pause and resume over Bluetooth.
+- [ ] Confirm Spotify capabilities during real playback. Danny will test this later.
+- [x] Load presets after mode changes, hide empty slots and show how many are used.
 - [x] Enable or hide transport controls and seeking based on those capabilities.
 - [x] Handle loading placeholders and `FS_NODE_BLOCKED` in browse lists so they don't appear as rows.
 - [x] Paginate lists with `LIST_GET_NEXT`, following `<listend/>`. The previous single request cut browse lists off at 200 items.
-- [ ] Confirm the updated controls and browsing in the real app.
+- [x] Confirm the updated controls in the real app on Internet Radio and Bluetooth.
 
 Done when each control behaves correctly in Internet Radio, Podcasts, Spotify, DAB, FM and Bluetooth, as far as those modes can be tested.
 
@@ -146,11 +148,11 @@ Done when each control behaves correctly in Internet Radio, Podcasts, Spotify, D
 
 Goal: the CLI and documentation match how the project now works.
 
-- [ ] Remove session handling from `bin/radio` and use the PIN on each request.
-- [ ] Update `AGENTS.md` and `README.md` for the new structure, requirements, polling and discovery.
-- [ ] Update `docs/fsapi-reference.md` with the SSDP target, `/device`, `/dd.xml` and Bonjour findings.
-- [ ] Update `docs/community-projects.md` with the afsapi move, new clients and security advisory.
-- [ ] Add a short troubleshooting note for the radio being online but unreachable from the Mac.
+- [x] Remove session handling from `bin/radio` and use the PIN on each request.
+- [x] Update `AGENTS.md` and `README.md` for the new structure, requirements, polling and discovery.
+- [x] Update `docs/fsapi-reference.md` with the SSDP target, `/device`, `/dd.xml`, Bonjour and per-mode capability findings.
+- [x] Update `docs/community-projects.md` with the afsapi move, new clients and security advisory.
+- [x] Add a short troubleshooting note for the radio being online but unreachable from the Mac.
 
 Done when a fresh reader can build, run and debug the project from the docs alone.
 

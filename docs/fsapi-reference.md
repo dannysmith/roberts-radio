@@ -28,9 +28,16 @@ FSAPI is a simple HTTP API. Send GET requests, receive XML responses. No officia
 
 **GET_MULTIPLE** is limited to ~5 nodes per request (the radio's HTTP server rejects long URLs).
 
-**LIST_GET_NEXT** uses `-1` as starting index to mean "from the beginning". Returns `FS_LIST_END` when no more items exist.
+**LIST_GET_NEXT** uses `-1` as starting index to mean "from the beginning". To read the next page, pass the last key received. A page containing `<listend/>` is the last one, and `FS_LIST_END` means no more items exist. Keep pages to about 50 items, since larger requests are more likely to be blocked.
 
 **GET_NOTIFIES** requires a session ID. Keeps the connection open and sends XML fragments when node values change. Returns `FS_TIMEOUT` if nothing changes. Only one session at a time -- creating a new one kills the previous.
+
+## Discovery
+
+- **SSDP:** the iStream 3L answers `urn:schemas-frontier-silicon-com:undok:fsapi:1` and `ssdp:all`, but not the `fs_reference` or `invalid` targets used by some other radios.
+- **Bonjour:** advertises `_undok._tcp` with TXT `VendorID=undok DeviceInfoLocation=/dd.xml FsAPILocation=/fsapi`. The advertised `/dd.xml` returns 404.
+- **`GET /device`:** needs no PIN and returns the firmware version and `webfsapi` URL. Its `friendlyName` is the placeholder `frname`, so read `netRemote.sys.info.friendlyName` instead.
+- **Reliability:** multicast replies can go missing on Wi-Fi, even when a direct query works, and the Mac's Bonjour cache can return a radio that's unreachable. Verify every candidate with `/device`, then an FSAPI read.
 
 ## Response Format
 
@@ -141,7 +148,7 @@ Nodes use dot-notation paths (e.g. `netRemote.sys.audio.volume`). Type is RW (re
 | Node | Type | RW | Description |
 |------|------|-----|-------------|
 | `netRemote.play.control` | E8 | RW | 0=STOP, 1=PLAY, 2=PAUSE, 3=NEXT, 4=PREVIOUS |
-| `netRemote.play.status` | E8 | RO | 1=buffering, 2=playing, 3=paused |
+| `netRemote.play.status` | E8 | RO | 0=idle, 1=buffering, 2=playing, 3=paused, 4=rebuffering, 5=error, 6=stopped, 7=error popup |
 | `netRemote.play.info.name` | C8 | RO | Station/track name |
 | `netRemote.play.info.text` | C8 | RO | Now-playing text |
 | `netRemote.play.info.artist` | C8 | RO | Artist |
@@ -155,11 +162,13 @@ Nodes use dot-notation paths (e.g. `netRemote.sys.audio.volume`). Type is RW (re
 | `netRemote.play.frequency` | U32 | RW | Radio frequency (Hz) |
 | `netRemote.play.signalStrength` | U8 | RO | Signal strength % |
 | `netRemote.play.addPreset` | U32 | RW | Save current to preset slot |
-| `netRemote.play.caps` | U32 | RO | Capability flags (undocumented bitmask) |
+| `netRemote.play.caps` | U32 | RO | Capability bitmask (see below) |
+
+`netRemote.play.caps` bits: 0 pause, 1 stop, 2 next, 3 previous, 4 fast-forward, 5 rewind, 6 shuffle, 7 repeat, 8 seek, 9 apply feedback, 10 scrobbling, 11 add preset, 12 thumbs up, 13 thumbs down, 14 skip forward, 15 skip backward, 16 repeat one.
 
 ### Navigation
 
-Navigation is **stateful** -- you must enable it (`nav.state=1`) before other nav commands work. Each browse operation triggers an HTTPS request to Airable's cloud servers.
+Navigation is **stateful** -- you must enable it (`nav.state=1`) before other nav commands work. The radio turns it off on every mode change, and `netRemote.nav.presets` returns `FS_NODE_BLOCKED` until it's back on. Each browse operation triggers an HTTPS request to Airable's cloud servers.
 
 | Node | Type | RW | Description |
 |------|------|-----|-------------|
@@ -178,7 +187,7 @@ Navigation is **stateful** -- you must enable it (`nav.state=1`) before other na
 
 ### Presets
 
-Presets are **per-mode**: Internet Radio and Podcasts get 40 slots each, DAB and FM get 10 each. You must be in the correct mode to access that mode's presets.
+Presets are **per-mode** (see the slot counts under Capabilities by Mode), and empty slots are returned with a blank name. You must be in the correct mode to access that mode's presets.
 
 | Operation | Command |
 |-----------|---------|
@@ -209,7 +218,27 @@ Based on live probing of a Venice X (FS2340) module running firmware V4.6.18:
 - **EQ presets:** 7
 - **FM range:** 87500-108000 Hz, step 50
 - **Default PIN:** 1234
-- **SSDP search target:** `urn:schemas-frontier-silicon-com:fs_reference:fsapi:1`
+- **SSDP search target:** `urn:schemas-frontier-silicon-com:undok:fsapi:1`
 - **No SSL certificate verification** on HTTPS connections to Airable (enables community self-hosted backends via DNS redirection)
 
 Full probe results are in `docs/archive/probe-results.json`.
+
+### Capabilities by Mode
+
+| Mode (ID)          | Caps  | Controls                                      | Presets |
+| ------------------ | ----- | --------------------------------------------- | ------- |
+| Internet Radio (0) | 2050  | Stop                                          | 40      |
+| Podcasts (1)       | 2557  | Pause, skip, FF/rewind, shuffle, repeat, seek | 40      |
+| Deezer (2)         | 192*  | Shuffle, repeat                               | 8       |
+| Amazon Music (3)   | 192*  | Shuffle, repeat                               | 8       |
+| Spotify (4)        | 2061* | Pause, skip                                   | 10      |
+| USB (5)            | 192*  | Shuffle, repeat                               | None    |
+| DAB (6)            | 2060  | Skip                                          | 10      |
+| FM (7)             | 2060  | Skip                                          | 10      |
+| Bluetooth (8)      | 13    | Pause, skip                                   | None    |
+| Aux In (9)         | 0     | None                                          | None    |
+
+\* Read with nothing playing, so playback may report more.
+
+- Live Internet Radio can't pause: `play.control=2` returns `FS_FAIL`. `play.control=1` resumes a stopped stream.
+- Capabilities can drop while buffering (`2050` to `2048`), so keep the last stable set.

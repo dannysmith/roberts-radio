@@ -132,11 +132,13 @@ Goal: controls match what the radio actually supports in each mode.
 
 These tests change playback, so check with Danny before running them.
 
-- [ ] Test resuming from stopped on this radio with `play.control` values `1` and `0`, then fix `playPause()` based on the result.
-- [ ] Decode `netRemote.play.caps` using afsapi as a reference and confirm against this radio across modes. Radio 4 in Internet Radio mode reports `2050`.
-- [ ] Enable or hide transport controls and seeking based on those capabilities.
-- [ ] Handle loading placeholders and `FS_NODE_BLOCKED` in browse lists so they don't appear as rows.
-- [ ] Check whether long browse lists are truncated by the single `LIST_GET_NEXT` request, and paginate if they are.
+- [x] Test resuming from stopped on this radio. `play.control=1` resumes a stopped Internet Radio stream, so no workaround is needed. `play.control=2` returns `FS_FAIL` on a live stream.
+- [x] Decode `netRemote.play.caps` using afsapi as a reference. Radio 4 in Internet Radio mode reports `2050` (Stop and Add Preset), dropping to `2048` while buffering.
+- [ ] Confirm the decoded capabilities against this radio in the other modes, especially Next and Previous on DAB and FM.
+- [x] Enable or hide transport controls and seeking based on those capabilities.
+- [x] Handle loading placeholders and `FS_NODE_BLOCKED` in browse lists so they don't appear as rows.
+- [x] Paginate lists with `LIST_GET_NEXT`, following `<listend/>`. The previous single request cut browse lists off at 200 items.
+- [ ] Confirm the updated controls and browsing in the real app.
 
 Done when each control behaves correctly in Internet Radio, Podcasts, Spotify, DAB, FM and Bluetooth, as far as those modes can be tested.
 

@@ -50,8 +50,11 @@ final class FSAPIGetParser: NSObject, XMLParserDelegate {
         defer { path.removeLast() }
         let parent = path.count >= 2 ? path[path.count - 2] : ""
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name == "status", parent == "fsapiResponse" { status = t }
-        else if parent == "value" { value = t }
+        if name == "status", parent == "fsapiResponse" {
+            status = t
+        } else if parent == "value" {
+            value = t
+        }
     }
 }
 
@@ -97,9 +100,13 @@ final class FSAPIListParser: NSObject, XMLParserDelegate {
         defer { path.removeLast() }
         let parent = path.count >= 2 ? path[path.count - 2] : ""
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name == "status", parent == "fsapiResponse" { status = t }
-        else if parent == "field", let fn = fieldName { itemFields[fn] = t }
-        else if name == "item", let k = itemKey { items.append(Item(key: k, fields: itemFields)) }
+        if name == "status", parent == "fsapiResponse" {
+            status = t
+        } else if parent == "field", let fn = fieldName {
+            itemFields[fn] = t
+        } else if name == "item", let k = itemKey {
+            items.append(Item(key: k, fields: itemFields))
+        }
     }
 }
 
@@ -141,7 +148,9 @@ final class FSAPIMultiParser: NSObject, XMLParserDelegate {
         case ("node", "fsapiResponse"): curNode = t
         case (_, "value"): curValue = t
         case ("fsapiResponse", _):
-            if curStatus == "FS_OK", !curNode.isEmpty { values[curNode] = curValue }
+            if curStatus == "FS_OK", !curNode.isEmpty {
+                values[curNode] = curValue
+            }
             curNode = ""; curStatus = ""; curValue = ""
         default: break
         }
@@ -203,7 +212,9 @@ actor FSAPIClient {
             guard let url = URL(string: "http://\(ip)/fsapi/GET_MULTIPLE?pin=\(pin)&\(q)"),
                   let data = await fetch(url)
             else {
-                if result.isEmpty { return [:] }
+                if result.isEmpty {
+                    return [:]
+                }
                 break
             }
             result.merge(FSAPIMultiParser.parse(data)) { _, new in new }
@@ -341,7 +352,11 @@ final class RadioViewModel: ObservableObject {
     // Internal
     var isDraggingVolume = false
     var popoverVisible = false {
-        didSet { if popoverVisible != oldValue { restartTimer() } }
+        didSet {
+            if popoverVisible != oldValue {
+                restartTimer()
+            }
+        }
     }
 
     private var isPolling = false
@@ -385,9 +400,13 @@ final class RadioViewModel: ObservableObject {
                 let wasConnected = isConnected
                 isConnected = true; connectionError = nil
                 power = r.value == "1"
-                if !wasConnected { Log("VM: Connected to \(ip)") }
+                if !wasConnected {
+                    Log("VM: Connected to \(ip)")
+                }
             } else {
-                if isConnected { Log("VM: Lost connection to \(ip)") }
+                if isConnected {
+                    Log("VM: Lost connection to \(ip)")
+                }
                 isConnected = false; connectionError = "Cannot reach radio at \(ip)"
             }
             return
@@ -412,31 +431,48 @@ final class RadioViewModel: ObservableObject {
         ])
 
         guard !vals.isEmpty else {
-            if isConnected { Log("VM: Lost connection to \(ip)") }
+            if isConnected {
+                Log("VM: Lost connection to \(ip)")
+            }
             isConnected = false
             connectionError = "Cannot reach radio at \(ip)"
             return
         }
-        if !isConnected { Log("VM: Connected to \(ip)") }
+        if !isConnected {
+            Log("VM: Connected to \(ip)")
+        }
         isConnected = true
         connectionError = nil
 
         power = vals["netRemote.sys.power"] == "1"
-        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) { volume = v }
+        if !isDraggingVolume, let s = vals["netRemote.sys.audio.volume"], let v = Double(s) {
+            volume = v
+        }
         muted = vals["netRemote.sys.audio.mute"] == "1"
-        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) { eqPresetId = v }
+        if let e = vals["netRemote.sys.audio.eqPreset"], let v = Int(e) {
+            eqPresetId = v
+        }
 
         let statusMap = ["1": "buffering", "2": "playing", "3": "paused"]
         playStatus = statusMap[vals["netRemote.play.status"] ?? "0"] ?? "stopped"
         let newTrack = vals["netRemote.play.info.name"] ?? ""
-        if newTrack != trackName { Log("VM: Now playing: \(newTrack)") }
+        if newTrack != trackName {
+            Log("VM: Now playing: \(newTrack)")
+        }
         trackName = newTrack
         artist = vals["netRemote.play.info.artist"] ?? ""
         infoText = vals["netRemote.play.info.text"] ?? ""
-        if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty { artworkURL = URL(string: u) }
-        else { artworkURL = nil }
-        if let d = vals["netRemote.play.info.duration"], let v = Int(d) { duration = v }
-        if let p = vals["netRemote.play.position"], let v = Int(p) { position = v }
+        if let u = vals["netRemote.play.info.graphicUri"], !u.isEmpty {
+            artworkURL = URL(string: u)
+        } else {
+            artworkURL = nil
+        }
+        if let d = vals["netRemote.play.info.duration"], let v = Int(d) {
+            duration = v
+        }
+        if let p = vals["netRemote.play.position"], let v = Int(p) {
+            position = v
+        }
 
         spotifyUser = vals["netRemote.spotify.username"] ?? ""
         let brMap = ["0": "Low", "1": "Normal", "2": "High", "3": "Very High"]
@@ -459,7 +495,9 @@ final class RadioViewModel: ObservableObject {
                 "netRemote.sys.caps.volumeSteps",
             ])
             radioName = info["netRemote.sys.info.friendlyName"] ?? radioName
-            if let s = info["netRemote.sys.caps.volumeSteps"], let v = Double(s) { maxVolume = v }
+            if let s = info["netRemote.sys.caps.volumeSteps"], let v = Double(s) {
+                maxVolume = v
+            }
         }
         if modes.isEmpty {
             let r = await client.list(ip, node: "netRemote.sys.caps.validModes")
@@ -600,7 +638,9 @@ final class RadioViewModel: ObservableObject {
         // The radio's nav layer can take a moment to populate after enable/navigate.
         // Retry a few times if numItems is 0 or the list fetch fails.
         for attempt in 0 ..< 4 {
-            if attempt > 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
 
             let info = await client.getMultiple(ip, nodes: [
                 "netRemote.nav.depth",
@@ -611,7 +651,9 @@ final class RadioViewModel: ObservableObject {
             browseTitle = info["netRemote.nav.currentTitle"] ?? modeName
 
             let numItems = Int(info["netRemote.nav.numItems"] ?? "0") ?? 0
-            if numItems == 0, attempt < 3 { continue }
+            if numItems == 0, attempt < 3 {
+                continue
+            }
             guard numItems > 0 else { browseItems = []; return }
 
             let r = await client.list(ip, node: "netRemote.nav.list", maxItems: min(numItems, 200))
@@ -629,7 +671,9 @@ final class RadioViewModel: ObservableObject {
 
     func fetchAlarms() async {
         let r = await client.list(radioIP, node: "netRemote.sys.alarm.config")
-        if r.status == "FS_OK" { alarms = r.items.map { (key: $0.key, fields: $0.fields) } }
+        if r.status == "FS_OK" {
+            alarms = r.items.map { (key: $0.key, fields: $0.fields) }
+        }
     }
 
     func discover() async {
@@ -827,8 +871,11 @@ struct RadioMenuView: View {
             HStack(alignment: .top, spacing: 10) {
                 if let url = vm.artworkURL {
                     AsyncImage(url: url) { phase in
-                        if let img = phase.image { img.resizable().aspectRatio(contentMode: .fill) }
-                        else { Rectangle().fill(.quaternary).overlay(Image(systemName: "music.note").foregroundColor(.secondary)) }
+                        if let img = phase.image {
+                            img.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Rectangle().fill(.quaternary).overlay(Image(systemName: "music.note").foregroundColor(.secondary))
+                        }
                     }
                     .frame(width: 48, height: 48)
                     .cornerRadius(6)
@@ -926,7 +973,9 @@ struct RadioMenuView: View {
             Slider(value: $vm.volume, in: 0 ... vm.maxVolume, step: 1) { EmptyView() }
                 onEditingChanged: { editing in
                     vm.isDraggingVolume = editing
-                    if !editing { Task { await vm.setVolume(Int(vm.volume)) } }
+                    if !editing {
+                        Task { await vm.setVolume(Int(vm.volume)) }
+                    }
                 }
 
             Text("\(Int(vm.volume))")
@@ -937,9 +986,15 @@ struct RadioMenuView: View {
     }
 
     private var volumeIcon: String {
-        if vm.volume == 0 { return "speaker.fill" }
-        if vm.volume < vm.maxVolume * 0.33 { return "speaker.wave.1.fill" }
-        if vm.volume < vm.maxVolume * 0.66 { return "speaker.wave.2.fill" }
+        if vm.volume == 0 {
+            return "speaker.fill"
+        }
+        if vm.volume < vm.maxVolume * 0.33 {
+            return "speaker.wave.1.fill"
+        }
+        if vm.volume < vm.maxVolume * 0.66 {
+            return "speaker.wave.2.fill"
+        }
         return "speaker.wave.3.fill"
     }
 
@@ -1049,19 +1104,18 @@ struct RadioMenuView: View {
         .padding(.horizontal, 8)
     }
 
+    @ViewBuilder
     private var presetsPanel: some View {
-        Group {
-            if vm.presets.isEmpty {
-                Text("No presets for this mode")
-                    .font(.caption).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(vm.presets, id: \.key) { preset in
-                            PresetRow(number: preset.key + 1, name: preset.name) {
-                                Task { await vm.selectPreset(preset.key) }
-                            }
+        if vm.presets.isEmpty {
+            Text("No presets for this mode")
+                .font(.caption).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(vm.presets, id: \.key) { preset in
+                        PresetRow(number: preset.key + 1, name: preset.name) {
+                            Task { await vm.selectPreset(preset.key) }
                         }
                     }
                 }
@@ -1131,8 +1185,11 @@ struct RadioMenuView: View {
                             ForEach(items, id: \.key) { item in
                                 BrowseRow(name: item.name, isFolder: item.isFolder) {
                                     filterText = ""
-                                    if item.isFolder { vm.browseInto(item.key) }
-                                    else { vm.browseSelect(item.key) }
+                                    if item.isFolder {
+                                        vm.browseInto(item.key)
+                                    } else {
+                                        vm.browseSelect(item.key)
+                                    }
                                 }
                             }
                         }
@@ -1148,7 +1205,9 @@ struct RadioMenuView: View {
         VStack(alignment: .leading, spacing: 4) {
             Button(action: {
                 showAlarms.toggle()
-                if showAlarms, vm.alarms.isEmpty { Task { await vm.fetchAlarms() } }
+                if showAlarms, vm.alarms.isEmpty {
+                    Task { await vm.fetchAlarms() }
+                }
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "alarm").font(.system(size: 10))
@@ -1184,7 +1243,9 @@ struct RadioMenuView: View {
         return HStack(spacing: 6) {
             Circle().fill(enabled ? Color.green : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
             Text(time).font(.system(size: 11, weight: .medium, design: .monospaced))
-            if let days { Text(days).font(.system(size: 10)).foregroundColor(.secondary) }
+            if let days {
+                Text(days).font(.system(size: 10)).foregroundColor(.secondary)
+            }
             Spacer()
             if let vol {
                 Image(systemName: "speaker.wave.1.fill").font(.system(size: 8)).foregroundColor(.secondary)
@@ -1196,15 +1257,23 @@ struct RadioMenuView: View {
     }
 
     private func formatAlarmTime(_ raw: String) -> String {
-        if let secs = Int(raw) { return String(format: "%02d:%02d", secs / 3600, (secs % 3600) / 60) }
+        if let secs = Int(raw) {
+            return String(format: "%02d:%02d", secs / 3600, (secs % 3600) / 60)
+        }
         return raw.isEmpty ? "--:--" : raw
     }
 
     private func formatWeekdays(_ raw: String?) -> String? {
         guard let raw, let mask = Int(raw), mask > 0 else { return nil }
-        if mask == 127 { return "Every day" }
-        if mask == 31 { return "Weekdays" }
-        if mask == 96 { return "Weekends" }
+        if mask == 127 {
+            return "Every day"
+        }
+        if mask == 31 {
+            return "Weekdays"
+        }
+        if mask == 96 {
+            return "Weekends"
+        }
         let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
         return (0 ..< 7).filter { mask & (1 << $0) != 0 }.map { days[$0] }.joined(separator: " ")
     }
@@ -1231,7 +1300,9 @@ struct RadioMenuView: View {
                 Spacer()
                 Button(action: { Task { await vm.discover() } }) {
                     HStack(spacing: 4) {
-                        if vm.isDiscovering { ProgressView().controlSize(.small).scaleEffect(0.7) }
+                        if vm.isDiscovering {
+                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                        }
                         Text(vm.isDiscovering ? "Searching..." : "Discover")
                     }
                 }

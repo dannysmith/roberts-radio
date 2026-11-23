@@ -144,6 +144,14 @@ Nodes use dot-notation paths (e.g. `netRemote.sys.audio.volume`). Type is RW (re
 | `netRemote.sys.net.wlan.macAddress` | C8 | RO | WiFi MAC |
 | `netRemote.sys.net.keepConnected` | E8 | RW | Keep-alive |
 
+### Bluetooth
+
+| Node | Type | RW | Description |
+|------|------|-----|-------------|
+| `netRemote.bluetooth.discoverableState` | E8 | RW | 1=discoverable for pairing |
+| `netRemote.bluetooth.connectedDevices` | List | RO | Device names and states |
+| `netRemote.bluetooth.connectedDevicesListVersion` | U32 | RO | Changes when the list changes |
+
 ### Playback
 
 | Node | Type | RW | Description |

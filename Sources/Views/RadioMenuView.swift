@@ -7,6 +7,7 @@ enum SidePanel {
 /// Root of the menubar popover: the main column plus an optional side panel.
 struct RadioMenuView: View {
     let vm: RadioViewModel
+    let macSpeaker: MacSpeaker
     @State private var showSettings = false
     @State private var showAlarms = false
     @State private var sidePanel: SidePanel = .none
@@ -21,7 +22,7 @@ struct RadioMenuView: View {
                     StandbyView(vm: vm)
                     Divider().padding(.vertical, 6)
                 } else {
-                    PlayerSections(vm: vm, sidePanel: $sidePanel, showAlarms: $showAlarms)
+                    PlayerSections(vm: vm, macSpeaker: macSpeaker, sidePanel: $sidePanel, showAlarms: $showAlarms)
                 }
                 Spacer(minLength: 0)
                 BottomBar(vm: vm, showSettings: $showSettings)
@@ -44,6 +45,7 @@ struct RadioMenuView: View {
 
 private struct PlayerSections: View {
     let vm: RadioViewModel
+    let macSpeaker: MacSpeaker
     @Binding var sidePanel: SidePanel
     @Binding var showAlarms: Bool
 
@@ -61,7 +63,8 @@ private struct PlayerSections: View {
             SpotifyInfo(user: vm.spotifyUser, bitRate: vm.spotifyBitRate)
         }
         Divider().padding(.vertical, 6)
-        SidePanelButtons(vm: vm, selection: $sidePanel)
+        SidePanelButtons(vm: vm, macSpeaker: macSpeaker, selection: $sidePanel)
+        MacSpeakerStatus(speaker: macSpeaker)
         Divider().padding(.vertical, 6)
         AlarmsSection(vm: vm, isExpanded: $showAlarms)
         Divider().padding(.vertical, 6)

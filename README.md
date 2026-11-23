@@ -22,6 +22,7 @@ Built on the community-reverse-engineered [FSAPI protocol](docs/fsapi-reference.
 - Spotify Connect account info
 - Alarm display
 - Finds the radio on your network and reconnects automatically
+- Mac Audio: one button to play your Mac's audio through the radio over Bluetooth
 - Configurable IP and PIN
 
 ## Install

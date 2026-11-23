@@ -23,6 +23,7 @@ Sources/
   Log.swift             # Debug logging
   FSAPI/                # HTTP client and XML parsers
   Discovery/            # Bonjour, SSDP, subnet scan and radio verification
+  MacAudio/             # Bluetooth connection and Mac audio output switching
   Views/                # SwiftUI popover views
 Tests/RadioBarTests/    # Swift Testing coverage for parsing and playback rules
 bin/
@@ -54,6 +55,7 @@ bin/radiobar-gui [--dock] [--debug]
 - Spotify Connect info (account, bitrate)
 - Alarm display (collapsible)
 - Radio discovery, with automatic reconnection to the saved radio
+- Mac Audio button that plays this Mac's audio through the radio over Bluetooth
 - Configurable IP and PIN
 
 **Flags:**
@@ -68,6 +70,7 @@ bin/radiobar-gui [--dock] [--debug]
 - The PIN is only sent to a host that has identified itself as FSAPI
 - Automatic reconnection only accepts the saved radio ID. Manual Discover can select a new radio
 - SSDP uses BSD sockets because Network framework can't receive unicast replies to a multicast send
+- Mac Audio pairs once through System Settings, then uses FSAPI, IOBluetooth and Core Audio. Turning it off restores the previous radio mode and Mac output
 - Actions are fire-and-forget: UI updates optimistically, the poll syncs actual state
 - Built with Swift Package Manager (`swift build -c release`)
 

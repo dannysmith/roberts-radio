@@ -61,6 +61,10 @@ final class RadioViewModel {
         modeName.lowercased().contains("spotify")
     }
 
+    var bluetoothModeID: Int? {
+        modes.first { $0.label.localizedCaseInsensitiveContains("bluetooth") }?.id
+    }
+
     var primaryAction: PrimaryPlaybackAction? {
         PrimaryPlaybackAction(status: playStatus, caps: playCaps)
     }
@@ -504,6 +508,18 @@ final class RadioViewModel {
     func selectPreset(_ key: Int) async {
         await send("netRemote.nav.action.selectPreset", "\(key)")
         await requestPoll(after: .seconds(1))
+    }
+
+    /// Reads the radio's mode directly, since `modeId` only updates while the popover is open.
+    func fetchCurrentModeID() async -> Int? {
+        guard isRadioVerified else { return nil }
+        let result = await client.get(radioIP, node: "netRemote.sys.mode")
+        return result.status == "FS_OK" ? result.value.flatMap(Int.init) : nil
+    }
+
+    /// Lets a new device pair with the radio. This can disconnect the device currently using it.
+    func makeBluetoothDiscoverable() async {
+        await send("netRemote.bluetooth.discoverableState", "1")
     }
 
     // MARK: Browse — stored Task avoids SwiftUI lifecycle cancellation

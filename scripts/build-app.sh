@@ -67,6 +67,8 @@ cat > "$CONTENTS/Info.plist" << 'PLIST'
     <string>27.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>RadioBar connects this Mac to your radio so it can play your Mac's audio.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>RadioBar uses your local network to find and control your radio.</string>
     <key>NSBonjourServices</key>

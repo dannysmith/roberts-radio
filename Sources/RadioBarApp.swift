@@ -18,11 +18,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct RadioBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @State private var vm = RadioViewModel()
+    @State private var vm: RadioViewModel
+    @State private var macSpeaker: MacSpeaker
+
+    init() {
+        let radio = RadioViewModel()
+        vm = radio
+        macSpeaker = MacSpeaker(radio: radio)
+    }
 
     var body: some Scene {
         MenuBarExtra {
-            RadioMenuView(vm: vm)
+            RadioMenuView(vm: vm, macSpeaker: macSpeaker)
                 .introspectMenuBarExtraWindow { window in
                     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                     window.isMovable = false

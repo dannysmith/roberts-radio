@@ -3,6 +3,7 @@ import SwiftUI
 /// Buttons that open and close the presets and browse panels.
 struct SidePanelButtons: View {
     let vm: RadioViewModel
+    let macSpeaker: MacSpeaker
     @Binding var selection: SidePanel
 
     var body: some View {
@@ -10,6 +11,7 @@ struct SidePanelButtons: View {
             toggle("Presets", icon: "list.bullet", panel: .presets)
             toggle("Browse", icon: "folder", panel: .browse)
             Spacer()
+            MacSpeakerButton(speaker: macSpeaker)
         }
     }
 

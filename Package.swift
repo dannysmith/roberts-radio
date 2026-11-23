@@ -13,5 +13,10 @@ let package = Package(
             dependencies: ["MenuBarExtraAccess"],
             path: "Sources"
         ),
+        .testTarget(
+            name: "RadioBarTests",
+            dependencies: ["RadioBar"],
+            path: "Tests/RadioBarTests"
+        ),
     ]
 )
